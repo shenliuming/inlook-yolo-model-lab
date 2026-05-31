@@ -27,7 +27,31 @@ inlook-yolo-model-lab/
 ├── assets/
 │   └── demo/
 ├── docs/
+├── tools/
+│   └── inlook-local-subtitle-packer/
 └── README.md
+```
+
+## 本地字幕工具
+
+仓库里已经集成第一版本地字幕工具：
+
+- `tools/inlook-local-subtitle-packer`
+
+用途：
+
+- 视频原声自动字幕
+- 录屏视频 + 单独真人语音字幕
+- 本地生成 `mp4 / srt / ass / txt`
+
+推荐用 `uv`：
+
+```bash
+cd tools/inlook-local-subtitle-packer
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
+uv run python scripts/check_env.py
 ```
 
 ## 后端启动

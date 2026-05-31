@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+models/
+inputs/
+outputs/
+*.mp4
+*.mov
+*.m4a
+*.mp3
+*.wav
+*.srt
+*.ass
+*.txt
+.DS_Store

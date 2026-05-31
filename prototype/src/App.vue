@@ -5,6 +5,18 @@ const appBase = import.meta.env.BASE_URL || '/'
 const withBase = (path) => `${appBase}${String(path || '').replace(/^\/+/, '')}`
 const internalApiKey = import.meta.env.VITE_INTERNAL_API_KEY || ''
 const MAX_IMAGE_FILE_BYTES = 10 * 1024 * 1024
+const siteLinks = [
+  {
+    id: 'home',
+    label: '返回首页',
+    href: 'https://in-look.cn/',
+  },
+  {
+    id: 'about',
+    label: '关于我',
+    href: 'https://in-look.cn/about.html',
+  },
+]
 
 const apiHeaders = () => {
   if (!internalApiKey) return {}
@@ -896,6 +908,16 @@ onBeforeUnmount(() => {
           <span>{{ currentDeviceLabel }}</span>
           <span>{{ status }}</span>
         </div>
+        <div class="hero-links">
+          <a
+            v-for="link in siteLinks"
+            :key="link.id"
+            class="hero-link"
+            :href="link.href"
+          >
+            {{ link.label }}
+          </a>
+        </div>
       </section>
 
       <section v-if="isScannerMode" class="card section scanner-stage-card">
@@ -911,6 +933,16 @@ onBeforeUnmount(() => {
           <canvas ref="overlayCanvasRef" class="camera-overlay"></canvas>
           <canvas ref="captureCanvasRef" class="capture-canvas"></canvas>
           <div class="scanner-mode-chip">{{ currentCameraProfile.label }}</div>
+          <div class="scanner-site-links">
+            <a
+              v-for="link in siteLinks"
+              :key="link.id"
+              class="scanner-site-link"
+              :href="link.href"
+            >
+              {{ link.label }}
+            </a>
+          </div>
           <div v-if="!cameraReady" class="scanner-entry">
             <label class="video-source-picker video-source-picker--scanner">
               <span>选择视频源</span>

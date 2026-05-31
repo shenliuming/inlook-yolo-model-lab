@@ -137,6 +137,12 @@ a {
   flex-wrap: wrap;
 }
 
+.hero-links {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .hero-meta span {
   padding: 8px 12px;
   border-radius: 999px;
@@ -144,6 +150,22 @@ a {
   color: #dbe2ec;
   font-size: 0.84rem;
   font-weight: 700;
+}
+
+.hero-link,
+.scanner-site-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #edf2f7;
+  font-size: 0.84rem;
+  font-weight: 700;
+  backdrop-filter: blur(10px);
 }
 
 .section {
@@ -509,6 +531,24 @@ a {
   backdrop-filter: blur(10px);
 }
 
+.scanner-site-links {
+  position: absolute;
+  top: calc(env(safe-area-inset-top, 0px) + 16px);
+  right: 16px;
+  z-index: 3;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: calc(100vw - 140px);
+}
+
+.scanner-site-link {
+  min-height: 36px;
+  padding: 0 12px;
+  background: rgba(19, 24, 33, 0.78);
+}
+
 .scanner-stage-overlay {
   position: absolute;
   inset: 0;
@@ -726,6 +766,17 @@ a {
 
   .scanner-stage-overlay {
     inset: 0;
+  }
+
+  .scanner-site-links {
+    max-width: calc(100vw - 148px);
+    gap: 8px;
+  }
+
+  .scanner-site-link {
+    min-height: 34px;
+    font-size: 0.8rem;
+    padding: 0 11px;
   }
 
   .action-section {
