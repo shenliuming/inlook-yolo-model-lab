@@ -1,5 +1,7 @@
 # inlook-yolo-model-lab
 
+INLOOK YOLO Model Lab is a public educational computer vision project for YOLO image, video, and camera recognition tests. It is designed to help beginners understand model testing, inference logs, result previews, and JSON reports through a simple web interface.
+
 本地可运行的 YOLO 模型测试平台，前端使用 Vue，后端使用 FastAPI，Python 版本通过 `uv` 管理。
 
 ## 合规说明
