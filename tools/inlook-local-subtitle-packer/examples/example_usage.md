@@ -56,3 +56,12 @@ uv run python scripts/subtitle_pack.py \
   --no-audio \
   --output ./muted_subtitle.mp4
 ```
+
+## 7. 手动改完 ASS 后只重新烧录
+
+```bash
+uv run python scripts/burn_subtitles.py \
+  --video ./input.mp4 \
+  --ass ./output_subtitled.ass \
+  --output ./output_fixed.mp4
+```

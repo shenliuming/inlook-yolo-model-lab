@@ -110,6 +110,30 @@ uv run python scripts/subtitle_pack.py \
   --output final.mp4
 ```
 
+### 4. 修改字幕后只重新烧录
+
+第一次先生成字幕和成片：
+
+```bash
+uv run python scripts/subtitle_pack.py \
+  --video input.mp4 \
+  --output output_subtitled.mp4
+```
+
+如果字幕有错：
+
+- 手动修改 `output_subtitled.ass`
+- 或先改 `output_subtitled.srt`，再自行同步成 ASS
+
+然后只重新烧录，不再重新跑 Whisper：
+
+```bash
+uv run python scripts/burn_subtitles.py \
+  --video input.mp4 \
+  --ass output_subtitled.ass \
+  --output output_fixed.mp4
+```
+
 ## 输出
 
 会生成：
@@ -121,6 +145,12 @@ final.ass   ASS 样式字幕
 final.txt   纯文本逐字稿
 ```
 
+重新烧录字幕时，通常只会新增：
+
+```text
+output_fixed.mp4
+```
+
 ## 第一版已经处理的问题
 
 - 中文路径
@@ -129,6 +159,7 @@ final.txt   纯文本逐字稿
 - 避免字幕路径出现奇怪斜杠
 - 有单独音频时替换原视频声音
 - 没有单独音频时尽量保留原视频声音
+- 修改 ASS 后可直接重新烧录，不必重复跑 Whisper
 
 ## 常用示例
 
