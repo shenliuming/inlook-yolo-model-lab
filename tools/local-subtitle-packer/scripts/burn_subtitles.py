@@ -6,15 +6,25 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from subtitle_pack import (
-    build_subtitle_filter,
-    run,
-    video_has_audio_stream,
-)
+try:
+    from scripts.subtitle_pack import (
+        build_subtitle_filter,
+        run,
+        video_has_audio_stream,
+    )
+except ImportError:
+    from subtitle_pack import (  # type: ignore
+        build_subtitle_filter,
+        run,
+        video_has_audio_stream,
+    )
 
 
 def check_ffmpeg_ass() -> None:
-    from subtitle_pack import check_ffmpeg
+    try:
+        from scripts.subtitle_pack import check_ffmpeg
+    except ImportError:
+        from subtitle_pack import check_ffmpeg  # type: ignore
 
     subtitle_filter_name = check_ffmpeg()
     if subtitle_filter_name != "ass":

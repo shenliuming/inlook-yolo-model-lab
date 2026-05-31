@@ -43,7 +43,7 @@ brew install uv
 ### 2. Install backend dependencies
 
 ```bash
-cd backend
+cd apps/yolo-api
 uv venv --python 3.11
 source .venv/bin/activate
 uv pip install -r requirements.txt
@@ -52,14 +52,14 @@ uv pip install -r requirements.txt
 ### 3. Start FastAPI
 
 ```bash
-cd backend
+cd apps/yolo-api
 uv run uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 ### 4. Start frontend
 
 ```bash
-cd prototype
+cd apps/yolo-web
 npm install
 npm run dev
 ```
@@ -95,31 +95,30 @@ npm run dev
 
 ```text
 inlook-yolo-model-lab/
-├── prototype/
-│   └── Vue frontend
-├── backend/
-│   ├── app.py
-│   ├── models/
-│   │   ├── official/
-│   │   └── inlook/
-│   │       └── best.pt
-│   ├── requirements.txt
-│   ├── uploads/
-│   ├── outputs/
-│   └── reports/
+├── apps/
+│   ├── yolo-api/
+│   │   ├── app.py
+│   │   ├── models/
+│   │   ├── requirements.txt
+│   │   ├── uploads/
+│   │   ├── outputs/
+│   │   └── reports/
+│   └── yolo-web/
+│       └── Vue frontend
+├── tools/
+│   └── local-subtitle-packer/
 ├── assets/
 │   └── demo/
 ├── docs/
-├── tools/
-│   └── inlook-local-subtitle-packer/
+├── deploy/
 └── README.md
 ```
 
 ## Local Subtitle Tool
 
-The repository also includes a first local subtitle utility:
+The repository also includes a separate local subtitle utility:
 
-- `tools/inlook-local-subtitle-packer`
+- `tools/local-subtitle-packer`
 
 Use cases:
 
@@ -127,10 +126,12 @@ Use cases:
 - 录屏视频 + 单独真人语音字幕
 - 本地输出 `mp4 / srt / ass / txt`
 
+This tool is independent from the YOLO apps. It does not reuse the YOLO backend and should not be described as part of the `/yolo/` recognition flow.
+
 Recommended workflow with `uv`:
 
 ```bash
-cd tools/inlook-local-subtitle-packer
+cd tools/local-subtitle-packer
 uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
@@ -142,7 +143,7 @@ uv run python scripts/check_env.py
 Recommended startup:
 
 ```bash
-cd backend
+cd apps/yolo-api
 uv venv --python 3.11
 uv pip install -r requirements.txt
 uv run uvicorn app:app --host 127.0.0.1 --port 8000 --reload
@@ -164,7 +165,7 @@ Static result paths:
 ## Frontend
 
 ```bash
-cd prototype
+cd apps/yolo-web
 npm install
 npm run dev
 ```
@@ -185,12 +186,12 @@ Open:
 
 Default custom model:
 
-- `backend/models/inlook/best.pt`
+- `apps/yolo-api/models/inlook/best.pt`
 
 Scanned model directories:
 
-- `backend/models/official/*.pt`
-- `backend/models/inlook/*.pt`
+- `apps/yolo-api/models/official/*.pt`
+- `apps/yolo-api/models/inlook/*.pt`
 
 Security-related constraints:
 
@@ -234,8 +235,8 @@ The project already includes a Docker-based deployment structure for ECS / VM de
 
 Files already included:
 
-- `backend/Dockerfile`
-- `prototype/Dockerfile`
+- `apps/yolo-api/Dockerfile`
+- `apps/yolo-web/Dockerfile`
 - `deploy/nginx.conf`
 - `docker-compose.yml`
 - `.dockerignore`
@@ -246,13 +247,13 @@ Make sure the server already has:
 
 - Docker
 - Docker Compose Plugin
-- Model file `backend/models/inlook/best.pt`
+- Model file `apps/yolo-api/models/inlook/best.pt`
 
 Optional official models:
 
-- `backend/models/official/yolo11n.pt`
-- `backend/models/official/yolo11s.pt`
-- `backend/models/official/yolov8n.pt`
+- `apps/yolo-api/models/official/yolo11n.pt`
+- `apps/yolo-api/models/official/yolo11s.pt`
+- `apps/yolo-api/models/official/yolov8n.pt`
 
 ### Start
 
@@ -300,11 +301,11 @@ If you want to mount the frontend under an existing website path:
 Build frontend with subpath base:
 
 ```bash
-cd prototype
+cd apps/yolo-web
 VITE_PUBLIC_BASE=/yolo/ npm run build
 ```
 
-Then publish `prototype/dist/` to:
+Then publish `apps/yolo-web/dist/` to:
 
 ```bash
 /var/www/in-look.cn/html/yolo/

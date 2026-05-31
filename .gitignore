@@ -1,7 +1,7 @@
 # Python
 __pycache__/
 *.pyc
-.venv/
+**/.venv/
 venv/
 env/
 
@@ -19,29 +19,29 @@ uploads/
 outputs/
 reports/
 logs/
-backend/uploads/
-backend/outputs/
-backend/reports/
-backend/logs/
+runtime/
+apps/yolo-api/uploads/
+apps/yolo-api/outputs/
+apps/yolo-api/reports/
+apps/yolo-api/runtime/
 
 # YOLO model files
 models/**/*.pt
 models/**/*.onnx
 models/**/*.engine
 backend/models/**/*.pt
-backend/models/**/*.onnx
-backend/models/**/*.engine
+apps/yolo-api/models/**/*.pt
 
 # Large media files
 *.mp4
 *.mov
-*.avi
-*.mkv
-*.zip
-*.rar
-*.7z
-*.pt
-*.onnx
+*.m4a
+*.mp3
+*.wav
+*.srt
+*.ass
+*.vtt
+
 # IDE / OS
 .DS_Store
 .idea/

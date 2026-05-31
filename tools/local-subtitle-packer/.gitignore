@@ -4,6 +4,7 @@ __pycache__/
 models/
 inputs/
 outputs/
+jobs/
 *.mp4
 *.mov
 *.m4a
@@ -12,4 +13,5 @@ outputs/
 *.srt
 *.ass
 *.txt
+*.log
 .DS_Store

@@ -2,16 +2,16 @@ services:
   backend:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: apps/yolo-api/Dockerfile
     container_name: inlook-yolo-backend
     restart: unless-stopped
     environment:
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ./backend/models:/app/backend/models
-      - ./backend/uploads:/app/backend/uploads
-      - ./backend/outputs:/app/backend/outputs
-      - ./backend/reports:/app/backend/reports
+      - ./apps/yolo-api/models:/app/models
+      - ./apps/yolo-api/uploads:/app/uploads
+      - ./apps/yolo-api/outputs:/app/outputs
+      - ./apps/yolo-api/reports:/app/reports
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:

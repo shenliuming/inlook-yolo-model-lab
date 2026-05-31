@@ -11,18 +11,37 @@
 → 输出成片
 ```
 
+## Download & Usage
+
+下载后，你可以直接在自己的电脑上运行，不需要上传云端。
+
+第一版提供两种入口：
+
+- 命令行工具
+- 本地 Web 版
+
 ## 安装
 
-macOS 先装 FFmpeg：
+macOS 建议先装带 `libass` 的 FFmpeg，否则无法把 ASS/SRT 真正烧录进视频：
 
 ```bash
-brew install ffmpeg
+brew tap nepherte/ffmpeg
+brew install --cask nepherte/ffmpeg/ffmpeg
+brew install --cask nepherte/ffmpeg/ffprobe
 ```
+
+安装后可以快速确认：
+
+```bash
+ffmpeg -filters | grep -E 'subtitles|ass'
+```
+
+如果能看到 `subtitles` 或 `ass`，说明字幕烧录环境已经就绪。
 
 推荐使用 `uv` 管理 Python 环境：
 
 ```bash
-cd tools/inlook-local-subtitle-packer
+cd tools/local-subtitle-packer
 uv venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
@@ -33,6 +52,50 @@ uv pip install -r requirements.txt
 ```bash
 brew install uv
 ```
+
+## One-Click Start
+
+### macOS
+
+- 终端启动：
+
+```bash
+./start.sh
+```
+
+- Finder 双击启动：
+
+```text
+start.command
+```
+
+### Windows
+
+双击：
+
+```text
+start.bat
+```
+
+启动后会自动：
+
+- 创建虚拟环境
+- 安装 `requirements.txt`
+- 检查 `ffmpeg`
+- 检查 `ffprobe`
+- 启动本地 FastAPI 服务
+- 打开浏览器 `http://127.0.0.1:7860`
+
+## Local Web UI
+
+Web 页面第一版支持：
+
+- 选择视频
+- 可选选择音频
+- 开始生成字幕
+- 显示日志
+- 下载 `mp4 / srt / ass / txt`
+- 修改 `ass` 后重新导出
 
 ## 环境检查
 
@@ -133,6 +196,29 @@ uv run python scripts/burn_subtitles.py \
   --ass output_subtitled.ass \
   --output output_fixed.mp4
 ```
+
+## Local Web Workflow
+
+第一次先自动识别：
+
+- 选择视频
+- 可选选择音频
+- 点击开始生成字幕
+
+会生成：
+
+- `mp4`
+- `srt`
+- `ass`
+- `txt`
+
+如果字幕有错：
+
+- 手动修改 `.ass` 或 `.srt`
+- 然后在 Web 页面里重新选择修改后的 `ass`
+- 点击重新导出
+
+这样不会重新跑 Whisper，只会重新烧录视频
 
 ## 输出
 

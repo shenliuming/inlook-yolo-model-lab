@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>INLOOK Local Subtitle Packer</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="hero card">
+        <h1>INLOOK Local Subtitle Packer</h1>
+        <p>本地视频字幕工具。不会上传云端，只在你的电脑上处理视频、语音和字幕文件。</p>
+      </section>
+
+      <section class="card section">
+        <h2>自动生成字幕</h2>
+        <form id="pack-form" class="form-grid">
+          <label>
+            <span>选择视频</span>
+            <input type="file" name="video" accept="video/*" required />
+          </label>
+          <label>
+            <span>可选音频</span>
+            <input type="file" name="audio" accept="audio/*" />
+          </label>
+          <label>
+            <span>模型</span>
+            <select name="model">
+              <option value="small">small</option>
+              <option value="base">base</option>
+              <option value="medium">medium</option>
+              <option value="large-v3">large-v3</option>
+            </select>
+          </label>
+          <button type="submit" class="primary-button">开始生成字幕</button>
+        </form>
+      </section>
+
+      <section class="card section">
+        <h2>修改 ASS 后重新导出</h2>
+        <form id="reburn-form" class="form-grid">
+          <input type="hidden" name="job_id" />
+          <label>
+            <span>选择修改后的 ASS</span>
+            <input type="file" name="ass" accept=".ass" />
+          </label>
+          <button type="submit" class="secondary-button">重新导出视频</button>
+        </form>
+        <p class="hint">先运行一次自动识别，生成 `ass` 文件。修改完成后，再用这里重新烧录，不会重新跑 Whisper。</p>
+      </section>
+
+      <section class="card section">
+        <h2>日志</h2>
+        <pre id="logs" class="log-box">等待开始…</pre>
+      </section>
+
+      <section class="card section">
+        <h2>下载结果</h2>
+        <div id="downloads" class="download-grid">
+          <span class="placeholder">生成完成后会显示 mp4 / srt / ass / txt 下载链接。</span>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+  </html>
