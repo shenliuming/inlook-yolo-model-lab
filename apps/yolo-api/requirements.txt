@@ -4,5 +4,17 @@ ultralytics==8.4.56
 opencv-python-headless==4.13.0.92
 python-multipart==0.0.29
 pydantic==2.13.4
-torch==2.12.0+cpu
-torchvision==0.27.0+cpu
+torch==2.12.0+cpu; platform_system == "Linux"
+torchvision==0.27.0+cpu; platform_system == "Linux"
+torch==2.12.0; platform_system != "Linux"
+torchvision==0.27.0; platform_system != "Linux"
+yt-dlp>=2025.1.15
+you-get>=0.4.1700
+faster-whisper>=1.2.1
+onnxruntime>=1.20.0
+sentencepiece>=0.1.99
+huggingface_hub>=0.34.0
+transformers>=4.57.1
+WeTextProcessing>=1.0.4.1
+soundfile>=0.13.1
+playwright>=1.53.0

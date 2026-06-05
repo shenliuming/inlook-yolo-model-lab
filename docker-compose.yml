@@ -12,10 +12,11 @@ services:
       - ./apps/yolo-api/uploads:/app/uploads
       - ./apps/yolo-api/outputs:/app/outputs
       - ./apps/yolo-api/reports:/app/reports
+      - ./apps/yolo-api/runtime:/app/runtime
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5).read()"]
       interval: 30s
       timeout: 10s
       retries: 5

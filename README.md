@@ -18,7 +18,8 @@ INLOOK YOLO Model Lab is a local-first YOLO web lab for image, video, and camera
 - 运行日志
 - JSON 测试报告
 - 结果下载
-- 本地字幕工具
+- 字幕识别
+- TTS 配音生成
 
 ## Screenshots
 
@@ -49,11 +50,40 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
+### 2.1 Prepare MOSS-TTS-Nano for local TTS
+
+```bash
+git clone https://github.com/OpenMOSS/MOSS-TTS-Nano.git third_party/MOSS-TTS-Nano
+cd apps/yolo-api
+uv pip install -r requirements.txt
+```
+
+Recommended ONNX CPU smoke test:
+
+```bash
+cd third_party/MOSS-TTS-Nano
+python infer_onnx.py \
+  --text "你好，这里是 INLOOK AI 内容工作流。" \
+  --voice Junhao \
+  --execution-provider cpu
+```
+
+If you prefer the CLI entry:
+
+```bash
+cd third_party/MOSS-TTS-Nano
+python -m moss_tts_nano.cli generate \
+  --backend onnx \
+  --text "你好，这里是 INLOOK AI 内容工作流。" \
+  --voice Junhao \
+  --execution-provider cpu
+```
+
 ### 3. Start FastAPI
 
 ```bash
 cd apps/yolo-api
-uv run uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+uv run uvicorn app:app --reload --host 127.0.0.1 --port 7860
 ```
 
 ### 4. Start frontend
@@ -61,13 +91,19 @@ uv run uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```bash
 cd apps/yolo-web
 npm install
-npm run dev
+npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
 ### 5. Open the local page
 
 - Frontend: `http://127.0.0.1:5173`
-- Backend health: `http://127.0.0.1:8000/api/health`
+- Backend health: `http://127.0.0.1:7860/api/health`
+
+If you want to use the old local backend port `8000`, start Vite with:
+
+```bash
+VITE_API_TARGET=http://127.0.0.1:8000 npm run dev -- --host 127.0.0.1 --port 5173
+```
 
 ## Compliance
 
@@ -98,44 +134,66 @@ inlook-yolo-model-lab/
 ├── apps/
 │   ├── yolo-api/
 │   │   ├── app.py
+│   │   ├── app/
+│   │   │   ├── main.py
+│   │   │   ├── controllers/
+│   │   │   ├── services/
+│   │   │   ├── clients/
+│   │   │   ├── config/
+│   │   │   ├── common/
+│   │   │   └── utils/
 │   │   ├── models/
 │   │   ├── requirements.txt
-│   │   ├── uploads/
-│   │   ├── outputs/
-│   │   └── reports/
+│   │   └── Dockerfile
 │   └── yolo-web/
+│       ├── src/api/
+│       ├── src/components/
+│       ├── src/App.vue
 │       └── Vue frontend
-├── tools/
-│   └── local-subtitle-packer/
 ├── assets/
 │   └── demo/
 ├── docs/
 ├── deploy/
+├── third_party/
+│   └── MOSS-TTS-Nano/      # local clone, not committed with models/generated_audio
 └── README.md
 ```
 
-## Local Subtitle Tool
+## AI Content Workflow
 
-The repository also includes a separate local subtitle utility:
+The content workflow is separate from the YOLO vision lab. It currently includes:
 
-- `tools/local-subtitle-packer`
+- Material Intake
+- Subtitle Recognition
+- TTS Voice Generation
 
-Use cases:
+Subtitle-related files are integrated into the backend service layer:
 
-- 视频原声自动字幕
-- 录屏视频 + 单独真人语音字幕
-- 本地输出 `mp4 / srt / ass / txt`
+- `apps/yolo-api/app/services/subtitle_tool/subtitle_pack.py`
+- `apps/yolo-api/app/services/subtitle_tool/burn_subtitles.py`
+- `apps/yolo-api/app/services/subtitle_tool/check_env.py`
 
-This tool is independent from the YOLO apps. It does not reuse the YOLO backend and should not be described as part of the `/yolo/` recognition flow.
+TTS-related files:
 
-Recommended workflow with `uv`:
+- `apps/yolo-api/app/controllers/tts_controller.py`
+- `apps/yolo-api/app/services/tts_service.py`
+- `apps/yolo-api/app/clients/moss_tts_client.py`
+
+TTS runtime output:
+
+- `apps/yolo-api/runtime/content_lab/tts/tasks/{task_id}/inputs`
+- `apps/yolo-api/runtime/content_lab/tts/tasks/{task_id}/outputs`
+- `apps/yolo-api/runtime/content_lab/tts/tasks/{task_id}/run.log`
+
+Helpful docs:
+
+- `docs/subtitle-workflow/example_usage.md`
+- `docs/subtitle-workflow/PRODUCTION_WORKFLOW.md`
+
+Quick env check:
 
 ```bash
-cd tools/local-subtitle-packer
-uv venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
-uv run python scripts/check_env.py
+uv run python apps/yolo-api/app/services/subtitle_tool/check_env.py
 ```
 
 ## Backend
@@ -146,16 +204,44 @@ Recommended startup:
 cd apps/yolo-api
 uv venv --python 3.11
 uv pip install -r requirements.txt
-uv run uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+uv run uvicorn app:app --reload --host 127.0.0.1 --port 7860
 ```
 
 API endpoints:
 
-- `GET /api/health`
+- `GET /api/v1/health`
+- `GET /api/v1/vision/health`
+- `GET /api/v1/vision/models`
+- `POST /api/v1/vision/models/select`
+- `POST /api/v1/vision/images/detect`
+- `POST /api/v1/vision/videos/detect`
+- `POST /api/v1/vision/realtime/detect`
+- `GET /api/v1/vision/tasks/{task_id}`
+- `GET /api/v1/vision/tasks/{task_id}/files/{filename}`
+- `GET /api/v1/content-lab/health`
+- `GET /api/v1/content-lab/materials/health`
+- `POST /api/v1/content-lab/materials/tasks`
+- `GET /api/v1/content-lab/materials/tasks/{task_id}`
+- `GET /api/v1/content-lab/materials/tasks/{task_id}/files/{filename}`
+- `GET /api/v1/content-lab/subtitles/health`
+- `POST /api/v1/content-lab/subtitles/tasks`
+- `GET /api/v1/content-lab/subtitles/tasks/{task_id}`
+- `POST /api/v1/content-lab/subtitles/tasks/{task_id}/reburn`
+- `GET /api/v1/content-lab/subtitles/tasks/{task_id}/files/{filename}`
+- `GET /api/v1/content-lab/tts/health`
+- `POST /api/v1/content-lab/tts/tasks`
+- `GET /api/v1/content-lab/tts/tasks/{task_id}`
+- `GET /api/v1/content-lab/tts/tasks/{task_id}/files/{filename}`
+
+Compatibility endpoints are still available:
+
 - `GET /api/models`
 - `POST /api/detect/image`
 - `POST /api/detect/video`
 - `POST /api/realtime/detect`
+- `POST /api/materials/tasks`
+- `GET /api/materials/tasks/{task_id}`
+- `GET /api/materials/tasks/{task_id}/files/{filename}`
 
 Static result paths:
 
@@ -167,12 +253,47 @@ Static result paths:
 ```bash
 cd apps/yolo-web
 npm install
-npm run dev
+npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
 Open:
 
 - `http://127.0.0.1:5173`
+
+Frontend routes:
+
+- `/`
+- `/vision-lab`
+- `/vision-lab/model-test`
+- `/vision-lab/image`
+- `/vision-lab/video`
+- `/vision-lab/realtime`
+- `/content-workflow`
+- `/content-workflow/material-intake`
+- `/content-workflow/subtitle-recognition`
+- `/content-workflow/tts`
+- `/content-lab`
+- `/content-lab/material-intake`
+- `/content-lab/subtitle-recognition`
+- `/content-lab/tts`
+
+Legacy redirects:
+
+- `/material-intake` -> `/content-workflow/material-intake`
+- `/content-intake` -> `/content-workflow/material-intake`
+- `/vision-lab/image-detect` -> `/vision-lab/image`
+- `/vision-lab/video-detect` -> `/vision-lab/video`
+- `/vision-lab/realtime-detect` -> `/vision-lab/realtime`
+
+Shared frontend modules:
+
+- `src/api/client.js`
+- `src/api/vision.js`
+- `src/api/workflow.js`
+- `src/api/contentLabApi.js`
+- `src/components/StatusCard.vue`
+- `src/components/TaskLog.vue`
+- `src/components/FileDownloadList.vue`
 
 ## Camera Mode
 

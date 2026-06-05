@@ -143,6 +143,61 @@ a {
   flex-wrap: wrap;
 }
 
+.hero-links--workspace {
+  justify-content: space-between;
+}
+
+.top-nav {
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.workspace-grid,
+.workflow-steps {
+  display: grid;
+  gap: 14px;
+}
+
+.workspace-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workspace-card,
+.workflow-step-card,
+.workflow-path,
+.tool-command-list {
+  display: grid;
+  gap: 12px;
+}
+
+.workspace-card h2,
+.workflow-step-card h2,
+.workflow-path h2 {
+  margin: 0;
+}
+
+.workspace-card p,
+.workflow-step-card p,
+.workflow-path p {
+  margin: 0;
+  color: #d6dce6;
+  line-height: 1.75;
+}
+
+.tool-command-list {
+  margin-top: 4px;
+}
+
+.tool-command-list code {
+  display: block;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(3, 7, 12, 0.62);
+  color: #dffcf7;
+  overflow-x: auto;
+}
+
 .hero-meta span {
   padding: 8px 12px;
   border-radius: 999px;
@@ -166,6 +221,16 @@ a {
   font-size: 0.84rem;
   font-weight: 700;
   backdrop-filter: blur(10px);
+}
+
+.hero-link--button {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.hero-link--active {
+  background: rgba(94, 234, 212, 0.12);
+  color: #91f6e8;
+  border-color: rgba(94, 234, 212, 0.25);
 }
 
 .section {
@@ -726,7 +791,8 @@ a {
   .link-grid,
   .result-overview,
   .mode-summary,
-  .mode-summary-meta {
+  .mode-summary-meta,
+  .workspace-grid {
     grid-template-columns: 1fr;
   }
 

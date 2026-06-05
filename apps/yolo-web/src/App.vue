@@ -1,10 +1,14 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { withBase } from './api/client'
+import { detectImage, detectRealtime, detectVideo, getHealth, getVisionModels } from './api/vision'
+import MaterialIntakePanel from './components/MaterialIntakePanel.vue'
+import SubtitleWorkflowPanel from './components/SubtitleWorkflowPanel.vue'
+import TtsWorkflowPanel from './components/TtsWorkflowPanel.vue'
 
 const appBase = import.meta.env.BASE_URL || '/'
-const withBase = (path) => `${appBase}${String(path || '').replace(/^\/+/, '')}`
-const internalApiKey = import.meta.env.VITE_INTERNAL_API_KEY || ''
 const MAX_IMAGE_FILE_BYTES = 10 * 1024 * 1024
+const currentPage = ref('workbench')
 const siteLinks = [
   {
     id: 'home',
@@ -17,13 +21,26 @@ const siteLinks = [
     href: 'https://in-look.cn/about.html',
   },
 ]
+const pageLinks = [
+  { id: 'workbench', label: '工作台', path: '' },
+  { id: 'vision-lab', label: 'AI 视觉实验室', path: 'vision-lab' },
+  { id: 'content-workflow', label: 'AI 内容工作流', path: 'content-workflow' },
+]
 
-const apiHeaders = () => {
-  if (!internalApiKey) return {}
-  return {
-    'X-INLOOK-Key': internalApiKey,
-  }
-}
+const visionLabLinks = [
+  { id: 'image-detect', label: '图片识别', path: 'vision-lab/image', type: 'image' },
+  { id: 'video-detect', label: '视频识别', path: 'vision-lab/video', type: 'video' },
+  { id: 'realtime-detect', label: '实时识别', path: 'vision-lab/realtime', type: 'camera' },
+  { id: 'model-test', label: '模型测试', path: 'vision-lab/model-test', type: 'image' },
+]
+
+const workflowSteps = [
+  { id: 'material-intake', title: '素材导入', description: '粘贴抖音/B站/视频号链接，或直接上传本地视频。', status: 'ready' },
+  { id: 'subtitle', title: '字幕识别', description: '用本地字幕工具识别语音，生成 srt / ass / txt，并可重新烧录字幕。', status: 'ready' },
+  { id: 'rewrite', title: '文案改写', description: '把识别出来的文本继续做摘要和改写。', status: 'placeholder' },
+  { id: 'tts', title: 'TTS 配音', description: '用 MOSS-TTS-Nano 生成新的本地配音音轨，支持默认音色和参考音频克隆。', status: 'ready' },
+  { id: 'compose', title: '视频合成', description: '把字幕、配音和视频重新打包成最终成片。', status: 'placeholder' },
+]
 
 const detectionTypes = [
   {
@@ -32,6 +49,13 @@ const detectionTypes = [
     uploadTitle: '上传 JPG / PNG',
     uploadHint: '上传图片后开始识别',
     accept: 'image/jpeg,image/png,image/*',
+  },
+  {
+    id: 'video',
+    label: '视频识别',
+    uploadTitle: '上传 MP4 视频',
+    uploadHint: '建议 30 秒以内，200MB 内',
+    accept: 'video/mp4,video/*',
   },
   {
     id: 'camera',
@@ -139,6 +163,7 @@ const displayedDetectionTypes = computed(() => {
   return [
     detectionTypes.find((item) => item.id === 'camera'),
     detectionTypes.find((item) => item.id === 'image'),
+    detectionTypes.find((item) => item.id === 'video'),
   ].filter(Boolean)
 })
 
@@ -168,8 +193,15 @@ const pickPreferredOfficialModel = (typeId = currentType.value) => {
 }
 
 const isScannerMode = computed(() =>
-  isMobileViewport.value && currentType.value === 'camera',
+  currentPage.value === 'vision-lab' && isMobileViewport.value && currentType.value === 'camera',
 )
+
+const isWorkbenchPage = computed(() => currentPage.value === 'workbench')
+const isVisionPage = computed(() => currentPage.value === 'vision-lab')
+const isContentWorkflowPage = computed(() => currentPage.value === 'content-workflow')
+const isMaterialIntakePage = computed(() => currentPage.value === 'content-workflow-material-intake')
+const isSubtitleToolPage = computed(() => currentPage.value === 'content-workflow-subtitle')
+const isTtsToolPage = computed(() => currentPage.value === 'content-workflow-tts')
 
 const currentCameraProfile = computed(() =>
   cameraProfiles[cameraProfileId.value] ?? cameraProfiles.live,
@@ -226,6 +258,13 @@ const currentModeDescription = computed(() => {
       hint: '适合快速测试',
     }
   }
+  if (currentType.value === 'video') {
+    return {
+      title: '视频识别',
+      description: '上传 MP4 视频，统一输出识别结果和测试报告，适合录屏或素材回看。',
+      hint: '适合视频测试',
+    }
+  }
   return {
     title: '摄像头识别',
     description: isMobileViewport.value
@@ -256,6 +295,147 @@ const currentCameraLabel = computed(() =>
   selectedVideoSource.value?.label
     ?? (cameraFacingMode.value === 'environment' ? '后摄像头' : '前摄像头'),
 )
+
+const readPageFromLocation = () => {
+  const basePath = new URL(appBase, window.location.origin).pathname.replace(/\/$/, '')
+  const pathname = window.location.pathname
+  const relativePath = pathname.startsWith(basePath)
+    ? pathname.slice(basePath.length).replace(/^\/+/, '')
+    : pathname.replace(/^\/+/, '')
+
+  if (relativePath.startsWith('material-intake') || relativePath.startsWith('content-intake')) {
+    const canonical = withBase('content-workflow/material-intake')
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState({}, '', canonical)
+    }
+    currentPage.value = 'content-workflow-material-intake'
+    return
+  }
+  if (relativePath.startsWith('content-workflow/material-intake')) {
+    currentPage.value = 'content-workflow-material-intake'
+    return
+  }
+  if (relativePath.startsWith('content-lab/tts')) {
+    const canonical = withBase('content-workflow/tts')
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState({}, '', canonical)
+    }
+    currentPage.value = 'content-workflow-tts'
+    return
+  }
+  if (relativePath.startsWith('content-workflow/tts')) {
+    currentPage.value = 'content-workflow-tts'
+    return
+  }
+  if (relativePath.startsWith('content-workflow/subtitle-recognition')) {
+    currentPage.value = 'content-workflow-subtitle'
+    return
+  }
+  if (relativePath.startsWith('content-lab/material-intake')) {
+    const canonical = withBase('content-workflow/material-intake')
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState({}, '', canonical)
+    }
+    currentPage.value = 'content-workflow-material-intake'
+    return
+  }
+  if (relativePath.startsWith('content-lab/subtitle-recognition')) {
+    const canonical = withBase('content-workflow/subtitle-recognition')
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState({}, '', canonical)
+    }
+    currentPage.value = 'content-workflow-subtitle'
+    return
+  }
+  if (relativePath.startsWith('content-lab')) {
+    const canonical = withBase('content-workflow')
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState({}, '', canonical)
+    }
+    currentPage.value = 'content-workflow'
+    return
+  }
+  if (relativePath.startsWith('content-workflow')) {
+    currentPage.value = 'content-workflow'
+    return
+  }
+  if (relativePath.startsWith('vision-lab/realtime-detect')) {
+    const canonical = withBase('vision-lab/realtime')
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState({}, '', canonical)
+    }
+    currentType.value = 'camera'
+    currentPage.value = 'vision-lab'
+    return
+  }
+  if (relativePath.startsWith('vision-lab/video-detect')) {
+    const canonical = withBase('vision-lab/video')
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState({}, '', canonical)
+    }
+    currentType.value = 'video'
+    currentPage.value = 'vision-lab'
+    return
+  }
+  if (relativePath.startsWith('vision-lab/image-detect')) {
+    const canonical = withBase('vision-lab/image')
+    if (window.location.pathname !== canonical) {
+      window.history.replaceState({}, '', canonical)
+    }
+    currentType.value = 'image'
+    currentPage.value = 'vision-lab'
+    return
+  }
+  if (relativePath.startsWith('vision-lab/realtime')) {
+    currentType.value = 'camera'
+    currentPage.value = 'vision-lab'
+    return
+  }
+  if (relativePath.startsWith('vision-lab/video')) {
+    currentType.value = 'video'
+    currentPage.value = 'vision-lab'
+    return
+  }
+  if (relativePath.startsWith('vision-lab/image') || relativePath.startsWith('vision-lab/model-test')) {
+    currentType.value = 'image'
+    currentPage.value = 'vision-lab'
+    return
+  }
+  if (relativePath.startsWith('vision-lab')) {
+    currentPage.value = 'vision-lab'
+    return
+  }
+  currentPage.value = 'workbench'
+}
+
+const navigateToPage = (pageId) => {
+  const target = pageLinks.find((item) => item.id === pageId)
+  if (!target) return
+  const href = withBase(target.path)
+  window.history.pushState({}, '', href)
+  currentPage.value = pageId
+}
+
+const navigateToVisionRoute = (item) => {
+  currentType.value = item.type
+  window.history.pushState({}, '', withBase(item.path))
+  currentPage.value = 'vision-lab'
+}
+
+const goToMaterialIntake = () => {
+  window.history.pushState({}, '', withBase('content-workflow/material-intake'))
+  currentPage.value = 'content-workflow-material-intake'
+}
+
+const goToSubtitleTool = () => {
+  window.history.pushState({}, '', withBase('content-workflow/subtitle-recognition'))
+  currentPage.value = 'content-workflow-subtitle'
+}
+
+const goToTtsTool = () => {
+  window.history.pushState({}, '', withBase('content-workflow/tts'))
+  currentPage.value = 'content-workflow-tts'
+}
 
 const cameraPrimaryActionLabel = computed(() => {
   if (!cameraReady.value) return isMobileViewport.value ? '扫一扫' : '打开摄像头'
@@ -490,33 +670,12 @@ const resetSelection = () => {
   }
 }
 
-const normalizeError = async (response) => {
-  if (response.status === 413) {
-    return '上传文件过大，请换一个更小的文件再试。'
-  }
-  try {
-    const payload = await response.json()
-    return payload.detail || '请求失败'
-  } catch {
-    return `请求失败（HTTP ${response.status}）`
-  }
-}
-
 const loadHealth = async () => {
-  const response = await fetch(withBase('api/health'), {
-    headers: apiHeaders(),
-  })
-  if (!response.ok) throw new Error(await normalizeError(response))
-  health.value = await response.json()
+  health.value = await getHealth()
 }
 
 const loadModels = async () => {
-  const response = await fetch(withBase('api/models'), {
-    headers: apiHeaders(),
-  })
-  if (!response.ok) throw new Error(await normalizeError(response))
-
-  const payload = await response.json()
+  const payload = await getVisionModels()
   models.value = payload.models || []
 
   if (!models.value.length) {
@@ -564,6 +723,13 @@ const handleFileChange = (event) => {
     return
   }
 
+  if (currentType.value === 'video' && file.size > 200 * 1024 * 1024) {
+    errorMessage.value = '视频文件过大，当前建议控制在 200MB 内。'
+    appendLog('[WARN] 视频文件过大')
+    event.target.value = ''
+    return
+  }
+
   clearResultState()
   status.value = '待开始'
   selectedFile.value = file
@@ -593,7 +759,7 @@ const runRecognition = async () => {
     `[INFO] 类型：${currentTypeConfig.value.label}`,
     `[INFO] 模型：${currentModel.value.title}`,
     '[INFO] 参数：conf=0.25 · imgsz=640',
-    '[RUNNING] 正在处理图片',
+    `[RUNNING] 正在处理${currentType.value === 'video' ? '视频' : '图片'}`,
   ]
 
   const formData = new FormData()
@@ -603,18 +769,7 @@ const runRecognition = async () => {
   formData.append('imgsz', '640')
 
   try {
-    const endpoint = withBase('api/detect/image')
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      body: formData,
-      headers: apiHeaders(),
-    })
-
-    if (!response.ok) {
-      throw new Error(await normalizeError(response))
-    }
-
-    const payload = await response.json()
+    const payload = await (currentType.value === 'video' ? detectVideo(formData) : detectImage(formData))
     resultUrl.value = withBase(payload.result_url)
     reportUrl.value = withBase(payload.report_url)
     reportData.value = payload.report
@@ -777,17 +932,7 @@ const captureCameraFrame = async () => {
   formData.append('imgsz', String(currentCameraProfile.value.imgsz))
 
   try {
-    const response = await fetch(withBase('api/realtime/detect'), {
-      method: 'POST',
-      body: formData,
-      headers: apiHeaders(),
-    })
-
-    if (!response.ok) {
-      throw new Error(await normalizeError(response))
-    }
-
-    const payload = await response.json()
+    const payload = await detectRealtime(formData)
     recentRealtimeResult.value = payload
     recentRealtimeBoxes.value = payload.boxes
     drawRealtimeBoxes(payload)
@@ -874,10 +1019,17 @@ watch(isMobileViewport, async (isMobile) => {
   cameraProfileId.value = 'demo'
 })
 
+watch(currentPage, (nextPage, prevPage) => {
+  if (prevPage === 'vision-lab' && nextPage !== 'vision-lab') {
+    stopCamera(false)
+  }
+})
+
 onMounted(() => {
+  readPageFromLocation()
   syncViewportState()
   syncDefaultFacingMode()
-  if (isMobileViewport.value) {
+  if (isMobileViewport.value && currentPage.value === 'vision-lab') {
     currentType.value = 'camera'
     cameraProfileId.value = 'demo'
   }
@@ -885,6 +1037,7 @@ onMounted(() => {
   loadVideoInputDevices()
   window.addEventListener('resize', syncViewportState)
   window.addEventListener('resize', updateCameraStage)
+  window.addEventListener('popstate', readPageFromLocation)
 })
 
 onBeforeUnmount(() => {
@@ -892,23 +1045,25 @@ onBeforeUnmount(() => {
   stopCamera(false)
   window.removeEventListener('resize', syncViewportState)
   window.removeEventListener('resize', updateCameraStage)
+  window.removeEventListener('popstate', readPageFromLocation)
 })
 </script>
 
 <template>
   <div class="app-shell" :class="{ 'app-shell--scanner': isScannerMode }">
     <main class="page" :class="{ 'page--scanner': isScannerMode }">
-      <section v-if="!isScannerMode" class="hero card">
-        <div class="hero-copy">
-          <h1>沈柳名的AI 实验室</h1>
-          <p>图片识别 · 摄像头识别 · 模型切换 · 运行日志 · 测试报告</p>
-          <small>仅用于合规图像识别学习、模型测试和内容创作。系统只输出识别结果，不提供任何游戏控制能力。</small>
-        </div>
-        <div class="hero-meta">
-          <span>{{ currentDeviceLabel }}</span>
-          <span>{{ status }}</span>
-        </div>
-        <div class="hero-links">
+      <section v-if="!isScannerMode" class="card section top-nav">
+        <div class="hero-links hero-links--workspace">
+          <button
+            v-for="item in pageLinks"
+            :key="item.id"
+            type="button"
+            class="hero-link hero-link--button"
+            :class="{ 'hero-link--active': currentPage === item.id || (item.id === 'content-workflow' && (isMaterialIntakePage || isSubtitleToolPage)) }"
+            @click="navigateToPage(item.id)"
+          >
+            {{ item.label }}
+          </button>
           <a
             v-for="link in siteLinks"
             :key="link.id"
@@ -919,6 +1074,102 @@ onBeforeUnmount(() => {
           </a>
         </div>
       </section>
+
+      <template v-if="isWorkbenchPage">
+        <section class="hero card">
+          <div class="hero-copy">
+            <h1>INLOOK AI 工作台</h1>
+            <p>把 AI 视觉实验和 AI 内容工作流拆开管理，入口更清楚，后续功能也更容易持续扩展。</p>
+            <small>当前已接入 YOLO 识别测试与素材导入器，后续字幕识别、文案改写、TTS 配音、视频合成会继续补进内容工作流。</small>
+          </div>
+        </section>
+
+        <section class="workspace-grid">
+          <article class="card section workspace-card">
+            <span class="mode-badge">AI 视觉实验室</span>
+            <h2>AI 视觉实验室</h2>
+            <p>YOLO 模型测试、图片识别、视频识别、实时识别。</p>
+            <button type="button" class="primary-button" @click="navigateToPage('vision-lab')">进入 /vision-lab</button>
+          </article>
+
+          <article class="card section workspace-card">
+            <span class="mode-badge">AI 内容工作流</span>
+            <h2>AI 内容工作流</h2>
+            <p>素材导入、字幕识别、文案改写、TTS 配音、视频合成。</p>
+            <button type="button" class="primary-button" @click="navigateToPage('content-workflow')">进入 /content-workflow</button>
+          </article>
+        </section>
+      </template>
+
+      <section v-else-if="isVisionPage && !isScannerMode" class="hero card">
+        <div class="hero-copy">
+          <h1>AI 视觉实验室</h1>
+          <p>YOLO 模型测试 · 图片识别 · 视频识别 · 实时识别</p>
+          <small>这里聚焦视觉识别与模型测试。素材导入器已经从视觉实验室拆出，归到 AI 内容工作流。</small>
+        </div>
+        <div class="hero-meta">
+          <span>{{ currentDeviceLabel }}</span>
+          <span>{{ status }}</span>
+        </div>
+        <div class="hero-links">
+          <button
+            v-for="item in visionLabLinks"
+            :key="item.id"
+            type="button"
+            class="hero-link hero-link--button"
+            :class="{ 'hero-link--active': (item.type === currentType) || (item.id === 'model-test' && currentType === 'image') }"
+            @click="navigateToVisionRoute(item)"
+          >
+            {{ item.label }}
+          </button>
+        </div>
+      </section>
+
+      <template v-else-if="isContentWorkflowPage">
+        <section class="hero card">
+          <div class="hero-copy">
+            <h1>INLOOK AI 内容工作流</h1>
+            <p>素材导入 · 字幕识别 · 文案改写 · TTS 配音 · 视频合成</p>
+            <small>内容工作流负责把外部素材统一整理成标准输入，再继续做字幕、文案和视频成片处理。</small>
+          </div>
+        </section>
+
+        <section class="workflow-steps">
+          <article
+            v-for="step in workflowSteps"
+            :key="step.id"
+            class="card section workflow-step-card"
+          >
+            <span class="mode-badge">{{ step.status === 'ready' ? '已接入' : '后续接入' }}</span>
+            <h2>{{ step.title }}</h2>
+            <p>{{ step.description }}</p>
+            <button
+              v-if="step.id === 'material-intake'"
+              type="button"
+              class="primary-button"
+              @click="goToMaterialIntake"
+            >
+              打开素材导入器
+            </button>
+            <button
+              v-else-if="step.id === 'subtitle'"
+              type="button"
+              class="primary-button"
+              @click="goToSubtitleTool"
+            >
+              打开字幕识别
+            </button>
+            <button
+              v-else-if="step.id === 'tts'"
+              type="button"
+              class="primary-button"
+              @click="goToTtsTool"
+            >
+              打开 TTS 配音
+            </button>
+          </article>
+        </section>
+      </template>
 
       <section v-if="isScannerMode" class="card section scanner-stage-card">
         <div class="camera-stage camera-stage--scanner" :style="isScannerMode ? undefined : { aspectRatio: cameraAspect }">
@@ -970,6 +1221,21 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <template v-if="isVisionPage">
+      <template v-if="false">
+        <div class="hero-links">
+          <button
+            v-for="item in visionLabLinks"
+            :key="item.id"
+            type="button"
+            class="hero-link hero-link--button"
+            :class="{ 'hero-link--active': item.type === currentType }"
+            @click="navigateToVisionRoute(item)"
+          >
+            {{ item.label }}
+          </button>
+        </div>
+      </template>
       <section v-if="!isScannerMode" class="card section">
         <div class="section-title">
           <h2>识别类型</h2>
@@ -1248,6 +1514,12 @@ onBeforeUnmount(() => {
                   :src="originalPreviewUrl"
                   alt="原始素材"
                 />
+                <video
+                  v-else-if="originalPreviewUrl && currentType === 'video'"
+                  class="media"
+                  :src="originalPreviewUrl"
+                  controls
+                ></video>
                 <div v-else class="placeholder">上传后显示原始素材</div>
               </div>
             </div>
@@ -1261,6 +1533,12 @@ onBeforeUnmount(() => {
                   :src="resultUrl"
                   alt="识别结果"
                 />
+                <video
+                  v-else-if="resultUrl && resultMediaType === 'video'"
+                  class="media"
+                  :src="resultUrl"
+                  controls
+                ></video>
                 <div v-else class="placeholder">
                   {{ isRunning ? '识别处理中...' : '识别完成后显示结果' }}
                 </div>
@@ -1367,6 +1645,34 @@ onBeforeUnmount(() => {
           </div>
         </details>
       </section>
+      </template>
+
+      <template v-else-if="isMaterialIntakePage">
+        <section class="card section workflow-path">
+          <span class="mode-badge">AI 内容工作流</span>
+          <h2>素材导入 → 字幕识别 → 文案改写 → TTS 配音 → 视频合成</h2>
+          <p class="section-hint">当前只实现第一步“素材导入器”。后续步骤先保留占位，避免和视觉实验室混在一个页面里。</p>
+        </section>
+        <MaterialIntakePanel />
+      </template>
+
+      <template v-else-if="isSubtitleToolPage">
+        <section class="card section workflow-path">
+          <span class="mode-badge">AI 内容工作流</span>
+          <h2>素材导入 → 字幕识别 → 文案改写 → TTS 配音 → 视频合成</h2>
+          <p class="section-hint">当前实现第二步“字幕识别”。它已经收进当前后端服务，入口也直接整合在工作台里。</p>
+        </section>
+        <SubtitleWorkflowPanel />
+      </template>
+
+      <template v-else-if="isTtsToolPage">
+        <section class="card section workflow-path">
+          <span class="mode-badge">AI 内容工作流</span>
+          <h2>素材导入 → 字幕识别 → 文案改写 → TTS 配音 → 视频合成</h2>
+          <p class="section-hint">当前实现第四步“TTS 配音”。它使用 MOSS-TTS-Nano，本地生成 voice.wav，不会跳到外部独立页面。</p>
+        </section>
+        <TtsWorkflowPanel />
+      </template>
     </main>
   </div>
 </template>

@@ -1,38 +1,48 @@
-# Python
-__pycache__/
-*.pyc
-**/.venv/
-venv/
-env/
-
-# Node
-node_modules/
-dist/
-.cache/
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
 
 # Env
 .env
 .env.*
+.env.local
 
-# Runtime uploads / outputs
-uploads/
+# Python
+**/.venv/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.cache/
+.uv-cache/
+.mplconfig/
+
+# Node
+node_modules/
+dist/
+.npm/
+.pnpm-store/
+
+# Runtime data
+runtime/
 outputs/
+uploads/
 reports/
 logs/
-runtime/
-apps/yolo-api/uploads/
-apps/yolo-api/outputs/
-apps/yolo-api/reports/
 apps/yolo-api/runtime/
+apps/yolo-api/runtime/browser_profiles/
+apps/yolo-api/runtime/content_lab/
+apps/yolo-api/runtime/content_lab/material_cache/
+apps/yolo-api/outputs/
+apps/yolo-api/uploads/
+apps/yolo-api/reports/
 
-# YOLO model files
-models/**/*.pt
-models/**/*.onnx
-models/**/*.engine
-backend/models/**/*.pt
-apps/yolo-api/models/**/*.pt
+# Generated logs
+*.log
 
-# Large media files
+# Large media / generated subtitle artifacts
 *.mp4
 *.mov
 *.m4a
@@ -41,8 +51,30 @@ apps/yolo-api/models/**/*.pt
 *.srt
 *.ass
 *.vtt
+!docs/examples/**/*.mp4
+!docs/examples/**/*.mov
+!docs/examples/**/*.m4a
+!docs/examples/**/*.mp3
+!docs/examples/**/*.wav
+!docs/examples/**/*.srt
+!docs/examples/**/*.ass
+!docs/examples/**/*.vtt
 
-# IDE / OS
-.DS_Store
-.idea/
-.vscode/
+# MOSS-TTS-Nano runtime artifacts
+third_party/MOSS-TTS-Nano/models/
+third_party/MOSS-TTS-Nano/generated_audio/
+engines/MOSS-TTS-Nano/models/
+engines/MOSS-TTS-Nano/generated_audio/
+runtime/content_lab/tts/
+apps/yolo-api/runtime/content_lab/tts/
+
+# Model files must stay out of Git
+models/**/*.pt
+models/**/*.onnx
+models/**/*.engine
+backend/models/**/*.pt
+apps/yolo-api/models/**/*.pt
+
+# Imported integration source snapshots
+inlook_content_intake_web/
+integrations/
