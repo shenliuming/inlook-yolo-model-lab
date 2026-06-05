@@ -207,54 +207,78 @@ def process_transcription_task(
     try:
         provider = get_asr_provider()
         if provider != "faster_whisper":
-            raise RuntimeError(f"暂不支持该 ASR Provider：{provider}")
+            raise AppException(
+                error_code.INTERNAL_ERROR,
+                f"视频文案提取失败：暂不支持该 ASR Provider：{provider}",
+                status_code=500,
+                data={"errorType": "transcription_failed", "materialId": material_id},
+            )
 
         task.update({"status": "running", "stage": "读取素材元信息", "progress": 10, "message": "正在读取视频信息"})
         write_task(task_id, task)
-        source_video, metadata = resolve_material_video_source(material_id, download_if_needed=True)
-        material, extra_keywords = _resolve_material_keywords(material_id)
-        hotwords = build_hotwords(material, extra_keywords=extra_keywords)
-        initial_prompt = build_initial_prompt(hotwords)
+        source_video, metadata = _validate_local_source_video(material_id)
         append_log(material_id, f"[ASR_PROVIDER] {provider}")
         append_log(material_id, f"[WHISPER_MODEL] {model}")
         append_log(material_id, f"[WHISPER_LANGUAGE] {language}")
         append_log(material_id, f"[WHISPER_DEVICE] {device}")
         append_log(material_id, f"[WHISPER_COMPUTE_TYPE] {compute_type}")
         append_log(material_id, f"[WHISPER_VAD_FILTER] {str(get_whisper_vad_filter()).lower()}")
-        append_log(material_id, f"[WHISPER_INITIAL_PROMPT] {str(bool(initial_prompt)).lower()}")
+        append_log(material_id, "[WHISPER_INITIAL_PROMPT] false")
 
         outputs = task_outputs_dir(task_id)
         material_output_files = _material_output_files(material_id)
         wav_path = material_output_files["audio.wav"]
         task.update({"stage": "提取音频", "progress": 25, "message": "正在提取音频"})
         write_task(task_id, task)
-        extract_audio(source_video, wav_path)
+        try:
+            extract_audio(source_video, wav_path)
+        except SystemExit as exc:
+            raise AppException(
+                error_code.INTERNAL_ERROR,
+                "视频文案提取失败：音频提取失败。",
+                status_code=500,
+                data={"errorType": "audio_extract_failed", "materialId": material_id},
+            ) from exc
         append_log(material_id, f"[ASR_AUDIO] {wav_path}")
         _copy_file(wav_path, outputs / "audio.wav")
 
         task.update({"stage": "识别语音文本", "progress": 55, "message": "Whisper 正在识别"})
         write_task(task_id, task)
-        raw_segments = transcribe(
-            wav_path,
-            model_name=model,
-            language=language,
-            device=device,
-            compute_type=compute_type,
-            beam_size=beam_size,
-            vad_filter=get_whisper_vad_filter(),
-            initial_prompt=initial_prompt,
-        )
+        try:
+            raw_segments = transcribe(
+                wav_path,
+                model_name=model,
+                language=language,
+                device=device,
+                compute_type=compute_type,
+                beam_size=beam_size,
+                vad_filter=get_whisper_vad_filter(),
+                initial_prompt=None,
+            )
+        except SystemExit as exc:
+            raise AppException(
+                error_code.INTERNAL_ERROR,
+                "视频文案提取失败：语音识别失败。",
+                status_code=500,
+                data={"errorType": "asr_failed", "materialId": material_id},
+            ) from exc
         if not raw_segments:
-            raise RuntimeError("没有识别到有效语音")
+            raise AppException(
+                error_code.INTERNAL_ERROR,
+                "视频文案提取失败：语音识别失败。",
+                status_code=500,
+                data={"errorType": "asr_failed", "materialId": material_id},
+            )
 
         segments = [
             {"start": seg.start, "end": seg.end, "text": seg.text}
             for seg in raw_segments
         ]
         asr_text = "\n".join(segment["text"] for segment in segments).strip()
-        corrected_asr_text, corrections_applied = correct_hotwords(asr_text)
-        final_text = corrected_asr_text
-        append_log(material_id, f"[ASR_CORRECTIONS] {len(corrections_applied)}")
+        corrected_asr_text = ""
+        corrections_applied: list[dict[str, Any]] = []
+        final_text = asr_text
+        append_log(material_id, "[ASR_CORRECTIONS] 0")
 
         task.update({"stage": "生成字幕文件", "progress": 80, "message": "正在写入字幕和 transcript"})
         write_task(task_id, task)
@@ -303,10 +327,18 @@ def process_transcription_task(
             },
         )
         transcript_txt_path.write_text(final_text + ("\n" if final_text else ""), encoding="utf-8")
-        write_srt(raw_segments, srt_path)
-        write_vtt(segments, vtt_path)
+        try:
+            write_srt(raw_segments, srt_path)
+            write_vtt(segments, vtt_path)
+        except Exception as exc:
+            raise AppException(
+                error_code.INTERNAL_ERROR,
+                "视频文案提取失败：字幕生成失败。",
+                status_code=500,
+                data={"errorType": "subtitle_generate_failed", "materialId": material_id},
+            ) from exc
         asr_text_path.write_text(asr_text + ("\n" if asr_text else ""), encoding="utf-8")
-        corrected_asr_text_path.write_text(corrected_asr_text + ("\n" if corrected_asr_text else ""), encoding="utf-8")
+        corrected_asr_text_path.write_text("", encoding="utf-8")
         final_transcript_path.write_text(final_text + ("\n" if final_text else ""), encoding="utf-8")
         write_json(asr_segments_path, asr_segment_payload)
         write_json(transcription_result_path, transcription_result_payload)
@@ -341,13 +373,20 @@ def process_transcription_task(
                 "engine": provider,
                 "model": model,
                 "language": language,
-                "hotwords": hotwords,
+                "hotwords": [],
                 "corrections_applied": corrections_applied,
-                "subtitle_files": {
-                    "srt": build_downloads(task_id)["srt"],
-                    "vtt": build_downloads(task_id)["vtt"],
-                },
+                "subtitle_files": _material_subtitle_files(material_id),
                 "downloads": build_downloads(task_id),
+            }
+        )
+        write_task(task_id, task)
+    except AppException as exc:
+        task.update(
+            {
+                "status": "failed",
+                "stage": "失败",
+                "message": exc.message,
+                "progress": task.get("progress", 0),
             }
         )
         write_task(task_id, task)
@@ -356,7 +395,7 @@ def process_transcription_task(
             {
                 "status": "failed",
                 "stage": "失败",
-                "message": str(exc),
+                "message": "视频文案提取失败：处理失败。",
                 "progress": task.get("progress", 0),
             }
         )
@@ -366,83 +405,15 @@ def process_transcription_task(
             {
                 "status": "failed",
                 "stage": "失败",
-                "message": str(exc),
+                "message": "视频文案提取失败：处理失败。",
                 "progress": task.get("progress", 0),
             }
         )
         write_task(task_id, task)
 
 
-def _resolve_local_material_video(material_id: str, filename: str) -> Path | None:
-    candidates = [
-        material_inputs_dir(material_id) / filename,
-        material_outputs_dir(material_id) / filename,
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    for candidate in material_dir(material_id).rglob(filename):
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _download_remote_material_video(material_id: str, *, source_type: str, video_url: str, referer: str) -> Path:
-    local_path = material_inputs_dir(material_id) / "source.mp4"
-    browser_client.download_file(source_type, target_url=video_url, output_path=local_path, referer=referer)
-    append_log(material_id, f"[TRANSCRIPTION_LOCAL_VIDEO] {local_path}")
-    return local_path
-
-
-def resolve_material_video_source(material_id: str, *, download_if_needed: bool = False) -> tuple[str | Path, dict[str, Any]]:
-    material_path = material_dir(material_id) / "material.json"
-    if material_path.exists():
-        material = read_material(material_id)
-        video = material.get("video") if isinstance(material, dict) else {}
-        video_url = str((video or {}).get("url") or "").strip()
-        source_type = str(material.get("sourceType") or "").strip()
-        referer = str(material.get("finalUrl") or material.get("sourceUrl") or "").strip()
-        for filename in ("source.mp4", "input.mp4"):
-            local_video = _resolve_local_material_video(material_id, filename)
-            if local_video is not None:
-                metadata = ffprobe_metadata(local_video)
-                return local_video, metadata
-        if video_url.startswith("/api/v1/materials/"):
-            filename = video_url.rstrip("/").split("/")[-1]
-            for candidate in material_dir(material_id).rglob(filename):
-                if candidate.is_file():
-                    return candidate, {
-                        "width": int((video or {}).get("width") or 0),
-                        "height": int((video or {}).get("height") or 0),
-                        "duration": float((video or {}).get("duration") or 0.0),
-                    }
-        remote_url = str((video or {}).get("remoteUrl") or video_url).strip()
-        if remote_url.startswith(("http://", "https://")) and download_if_needed:
-            local_video = _download_remote_material_video(
-                material_id,
-                source_type=source_type,
-                video_url=remote_url,
-                referer=referer,
-            )
-            return local_video, ffprobe_metadata(local_video)
-        if video_url.startswith(("http://", "https://")):
-            return video_url, {
-                "width": int((video or {}).get("width") or 0),
-                "height": int((video or {}).get("height") or 0),
-                "duration": float((video or {}).get("duration") or 0.0),
-            }
-        raise HTTPException(status_code=400, detail="素材未解析出可用视频源，无法提取文案")
-
-    material_task = get_material_task(material_id)
-    if material_task.get("status") != "success":
-        raise HTTPException(status_code=400, detail="素材尚未准备完成，无法提取文案")
-    source_video = get_material_file(material_id, "input.mp4")
-    return source_video, ffprobe_metadata(source_video)
-
-
 def create_transcription_task(
     *,
-    background_tasks: BackgroundTasks,
     material_id: str,
     model: str,
     language: str,
@@ -450,7 +421,7 @@ def create_transcription_task(
     compute_type: str,
     beam_size: int,
 ) -> dict[str, Any]:
-    resolve_material_video_source(material_id, download_if_needed=False)
+    _validate_local_source_video(material_id)
 
     task_id = build_task_id()
     task_inputs_dir(task_id).mkdir(parents=True, exist_ok=True)
@@ -468,8 +439,7 @@ def create_transcription_task(
         "updated_at": now(),
     }
     write_task(task_id, task)
-    background_tasks.add_task(
-        process_transcription_task,
+    process_transcription_task(
         task_id,
         material_id=material_id,
         model=model,
@@ -478,7 +448,27 @@ def create_transcription_task(
         compute_type=compute_type,
         beam_size=beam_size,
     )
-    return get_transcription(task_id)
+    result = get_transcription(task_id)
+    if result["status"] == "failed":
+        message = result.get("message") or "视频文案提取失败：处理失败。"
+        error_type = "transcription_failed"
+        if "本地视频不存在" in message:
+            error_type = "source_mp4_missing"
+        elif "本地视频无效" in message:
+            error_type = "source_mp4_invalid"
+        elif "音频提取失败" in message:
+            error_type = "audio_extract_failed"
+        elif "语音识别失败" in message:
+            error_type = "asr_failed"
+        elif "字幕生成失败" in message:
+            error_type = "subtitle_generate_failed"
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            message,
+            status_code=500,
+            data={"errorType": error_type, "materialId": material_id},
+        )
+    return result
 
 
 def get_transcription(task_id: str) -> dict[str, Any]:
