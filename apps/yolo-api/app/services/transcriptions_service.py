@@ -4,6 +4,7 @@ import json
 import shutil
 import threading
 import uuid
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,9 +16,8 @@ from app.common import error_code
 from app.common.exceptions import AppException
 from app.config.paths import STUDIO_TRANSCRIPTION_RUNTIME_DIR
 from app.config.settings import get_asr_provider, get_whisper_vad_filter
-from app.services.material_intake_service import get_material_file, get_material_task
 from app.services.subtitle_tool.subtitle_pack import extract_audio, transcribe, write_srt
-from app.tasks.task_store import append_log, material_dir, material_inputs_dir, material_outputs_dir, read_material
+from app.tasks.task_store import append_log, material_dir, material_inputs_dir, material_outputs_dir
 
 RUNTIME_ROOT = STUDIO_TRANSCRIPTION_RUNTIME_DIR
 RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
@@ -138,7 +138,11 @@ def _material_output_files(material_id: str) -> dict[str, Path]:
         "asr_segments.json": outputs / "asr_segments.json",
         "corrected_asr_text.txt": outputs / "corrected_asr_text.txt",
         "final_transcript.txt": outputs / "final_transcript.txt",
+        "transcript.txt": outputs / "transcript.txt",
+        "subtitles.srt": outputs / "subtitles.srt",
+        "subtitles.vtt": outputs / "subtitles.vtt",
         "transcription_result.json": outputs / "transcription_result.json",
+        "metadata.json": outputs / "metadata.json",
     }
 
 
@@ -308,7 +312,7 @@ def process_transcription_task(
             "asrText": asr_text,
             "correctedAsrText": corrected_asr_text,
             "finalText": final_text,
-            "hotwords": hotwords,
+            "hotwords": [],
             "correctionsApplied": corrections_applied,
         }
 
@@ -342,21 +346,23 @@ def process_transcription_task(
         final_transcript_path.write_text(final_text + ("\n" if final_text else ""), encoding="utf-8")
         write_json(asr_segments_path, asr_segment_payload)
         write_json(transcription_result_path, transcription_result_payload)
+        _copy_file(transcript_txt_path, material_output_files["transcript.txt"])
+        _copy_file(srt_path, material_output_files["subtitles.srt"])
+        _copy_file(vtt_path, material_output_files["subtitles.vtt"])
         _copy_file(asr_text_path, outputs / "asr_text.txt")
         _copy_file(asr_segments_path, outputs / "asr_segments.json")
         _copy_file(corrected_asr_text_path, outputs / "corrected_asr_text.txt")
         _copy_file(final_transcript_path, outputs / "final_transcript.txt")
         _copy_file(transcription_result_path, outputs / "transcription_result.json")
-        write_json(
-            outputs / "metadata.json",
-            {
-                "taskId": task_id,
-                "materialId": material_id,
-                "video": metadata,
-                "segmentCount": len(segments),
-                "createdAt": now(),
-            },
-        )
+        metadata_payload = {
+            "taskId": task_id,
+            "materialId": material_id,
+            "video": metadata,
+            "segmentCount": len(segments),
+            "createdAt": now(),
+        }
+        write_json(outputs / "metadata.json", metadata_payload)
+        write_json(material_output_files["metadata.json"], metadata_payload)
 
         task.update(
             {
@@ -364,6 +370,7 @@ def process_transcription_task(
                 "stage": "完成",
                 "progress": 100,
                 "message": "文案与字幕提取完成",
+                "material_key": material_id,
                 "full_text": final_text,
                 "transcript": final_text,
                 "asr_text": asr_text,
@@ -391,6 +398,7 @@ def process_transcription_task(
         )
         write_task(task_id, task)
     except SystemExit as exc:
+        append_log(material_id, f"[TRANSCRIPTION_SYSTEM_EXIT] {exc}")
         task.update(
             {
                 "status": "failed",
@@ -401,6 +409,8 @@ def process_transcription_task(
         )
         write_task(task_id, task)
     except Exception as exc:
+        append_log(material_id, f"[TRANSCRIPTION_EXCEPTION] {exc}")
+        append_log(material_id, traceback.format_exc())
         task.update(
             {
                 "status": "failed",
@@ -430,6 +440,7 @@ def create_transcription_task(
         "task_id": task_id,
         "task_type": "transcription.extract",
         "material_id": material_id,
+        "material_key": material_id,
         "status": "pending",
         "stage": "等待执行",
         "progress": 0,
@@ -477,6 +488,7 @@ def get_transcription(task_id: str) -> dict[str, Any]:
         "transcriptionId": task["task_id"],
         "taskId": task["task_id"],
         "materialId": task.get("material_id"),
+        "materialKey": task.get("material_key") or task.get("material_id"),
         "status": task.get("status"),
         "stage": task.get("stage"),
         "progress": task.get("progress"),

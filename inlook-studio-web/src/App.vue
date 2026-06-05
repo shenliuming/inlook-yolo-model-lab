@@ -10,7 +10,7 @@ import VideoPreviewPanel from './components/VideoPreviewPanel.vue'
 import RecentTaskTable from './components/RecentTaskTable.vue'
 import { clearBrowserAuth, getBrowserAuthStatus, startBrowserAuth } from './api/browserAuth'
 import { extractMaterial, uploadMaterial } from './api/materials'
-import { createTranscription, getTranscription } from './api/transcriptions'
+import { createTranscription } from './api/transcriptions'
 import { listTasks } from './api/tasks'
 import { createSynthesis, createTraining, getSynthesis, getTraining } from './api/tts'
 import { apiUrl } from './api/client'
@@ -110,7 +110,6 @@ const renderingMeta = ref({
 })
 
 let taskPollTimer = null
-let transcriptionPollTimer = null
 let trainingPollTimer = null
 let synthesisPollTimer = null
 const authPollTimers = {
@@ -627,7 +626,7 @@ const extractScript = async () => {
     return
   }
   transcriptionLoading.value = true
-  subtitleStatus.value = '转写任务创建中'
+  subtitleStatus.value = '处理中'
   try {
     const task = await createTranscription({
       materialId: materialId.value,
@@ -639,46 +638,26 @@ const extractScript = async () => {
     })
     transcriptionId.value = task.transcriptionId
     currentStep.value = task.stage || '文案提取'
-    previewState.value = 'rendering'
-    renderProgress.value = task.progress || 0
-    subtitleStatus.value = task.message || '转写任务已创建'
+    previewState.value = 'done'
+    renderProgress.value = task.progress || 100
+    subtitleStatus.value = '完成'
+    const preferredText =
+      task.finalText || task.transcript || task.text || task.asrText || ''
+    if (preferredText) {
+      rawScript.value = preferredText
+      rawScriptSource.value = 'transcription'
+      previewTitle.value = preferredText.slice(0, 24) || '已生成原始文案'
+    }
+    subtitleDownloads.value = task.subtitleFiles || {}
+    renderingMeta.value.finalDuration = renderingMeta.value.sourceDuration
+    readStatus.value = '视频文案提取完成'
     await fetchTasks()
-    transcriptionPollTimer = window.setInterval(async () => {
-      try {
-        const latest = await getTranscription(task.transcriptionId)
-        currentStep.value = latest.stage || '文案提取'
-        renderProgress.value = latest.progress || 0
-        subtitleStatus.value = latest.message || latest.stage
-        const preferredText =
-          latest.finalText || latest.correctedAsrText || latest.asrText || latest.transcript || latest.text || ''
-        if (preferredText) {
-          rawScript.value = preferredText
-          rawScriptSource.value = 'transcription'
-          previewTitle.value = preferredText.slice(0, 24) || '已生成原始文案'
-        }
-        if (latest.status === 'success') {
-          subtitleDownloads.value = latest.subtitleFiles || {}
-          previewState.value = 'done'
-          renderingMeta.value.finalDuration = renderingMeta.value.sourceDuration
-          window.clearInterval(transcriptionPollTimer)
-          transcriptionPollTimer = null
-          transcriptionLoading.value = false
-          readStatus.value = '视频文案提取完成'
-        }
-        if (latest.status === 'failed') {
-          previewState.value = 'idle'
-          window.clearInterval(transcriptionPollTimer)
-          transcriptionPollTimer = null
-          transcriptionLoading.value = false
-          readStatus.value = latest.message || '视频文案提取失败'
-        }
-      } catch (error) {
-        setGlobalErrorFromException(error, '视频文案提取失败，请稍后重试。')
-      }
-    }, 2000)
   } catch (error) {
-    subtitleStatus.value = normalizeUiErrorMessage(error, '视频文案提取失败')
+    subtitleStatus.value = '失败'
+    readStatus.value = normalizeUiErrorMessage(error, '视频文案提取失败')
+    previewState.value = 'idle'
     setGlobalErrorFromException(error, '视频文案提取失败，请稍后重试。')
+  } finally {
     transcriptionLoading.value = false
   }
 }
@@ -800,7 +779,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopTaskPolling()
-  if (transcriptionPollTimer) window.clearInterval(transcriptionPollTimer)
   if (trainingPollTimer) window.clearInterval(trainingPollTimer)
   if (synthesisPollTimer) window.clearInterval(synthesisPollTimer)
   stopAuthPolling('douyin')

@@ -10,7 +10,7 @@ router = APIRouter(prefix="/api/v1", tags=["studio-transcriptions"])
 
 
 @router.post("/transcriptions")
-async def create_transcription(request: TranscriptionCreateRequestDTO):
+def create_transcription(request: TranscriptionCreateRequestDTO):
     return success(
         create_transcription_task(
             material_id=request.materialId,
