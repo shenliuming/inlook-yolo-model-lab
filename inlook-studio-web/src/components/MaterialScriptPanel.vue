@@ -20,14 +20,6 @@ const props = defineProps({
     type: String,
     default: '',
   },
-  materialStatus: {
-    type: String,
-    default: '',
-  },
-  materialSummary: {
-    type: String,
-    default: '',
-  },
   material: {
     type: Object,
     default: null,
@@ -64,11 +56,7 @@ const props = defineProps({
     type: String,
     default: '手动输入',
   },
-  scriptDetailReady: {
-    type: Boolean,
-    default: false,
-  },
-  materialLocalReady: {
+  inputDirty: {
     type: Boolean,
     default: false,
   },
@@ -77,28 +65,36 @@ const props = defineProps({
 const emit = defineEmits([
   'update:videoLink',
   'update:rawScript',
-  'read-video',
   'file-selected',
   'manual-input',
   'extract-script',
   'start-auth',
   'clear-auth',
-  'view-script-detail',
 ])
 
 const fileInputRef = ref(null)
 const assetDrawerOpen = ref(false)
+const authExpanded = ref(false)
+const copyHint = ref('')
 const charCount = computed(() => props.rawScript.trim().length)
-const materialUsageLabel = computed(() => {
-  if (props.material?.cacheStatus === 'local_ready') return '本地 source.mp4'
-  if (props.material?.cacheStatus === 'metadata_cached') return '已有素材信息，视频未下载'
-  if (props.material?.cacheStatus === 'local_missing') return '本地视频文件丢失'
-  if (props.material?.cacheStatus === 'local_invalid') return '本地视频文件无效'
-  return '外部视频链接'
-})
 const materialFailureText = computed(() => {
   if (props.materialLamp !== 'failed') return ''
   return props.readStatus || '素材下载失败，请重试或上传本地视频。'
+})
+const primaryButtonText = computed(() => {
+  if (props.isReading || props.transcriptionLoading) return '处理中...'
+  if (props.inputDirty) return '提取文案'
+  if (props.subtitleStatus === '失败') return '重试'
+  if (props.materialLamp === 'failed') return '重试'
+  if (props.rawScript.trim() && props.scriptSourceLabel === '视频口播') return '重新提取'
+  return '提取文案'
+})
+const flowStatusText = computed(() => {
+  if (props.isReading) return '正在读取素材...'
+  if (props.transcriptionLoading) return '正在提取口播...'
+  if (props.subtitleStatus === '完成') return '已完成'
+  if (props.materialLamp === 'failed') return props.readStatus || '处理失败'
+  return props.readStatus || '等待输入'
 })
 
 const triggerFileSelect = () => {
@@ -124,6 +120,20 @@ const authText = (platform) => {
   }
   return map[value] || value
 }
+
+const copyText = async (text, hint = '已复制文案') => {
+  const value = String(text || '').trim()
+  if (!value) return
+  try {
+    await navigator.clipboard.writeText(value)
+    copyHint.value = hint
+    window.setTimeout(() => {
+      if (copyHint.value === hint) copyHint.value = ''
+    }, 1400)
+  } catch {
+    copyHint.value = '复制失败'
+  }
+}
 </script>
 
 <template>
@@ -137,61 +147,66 @@ const authText = (platform) => {
     </div>
 
     <div class="panel-body stack-md">
-      <div class="sub-panel auth-strip">
-        <div class="auth-strip__row">
-          <div class="auth-strip__status">
-            <span>抖音</span>
-            <strong>{{ authText('douyin') }}</strong>
-          </div>
-          <div class="auth-strip__actions">
-            <button class="secondary-button secondary-button--small" type="button" @click="emit('start-auth', 'douyin')">
-              授权
-            </button>
-            <button class="ghost-button ghost-button--small" type="button" @click="emit('clear-auth', 'douyin')">
-              清除
-            </button>
-          </div>
-        </div>
-        <div class="auth-strip__row">
-          <div class="auth-strip__status">
-            <span>B站</span>
-            <strong>{{ authText('bilibili') }}</strong>
-          </div>
-          <div class="auth-strip__actions">
-            <button class="secondary-button secondary-button--small" type="button" @click="emit('start-auth', 'bilibili')">
-              授权
-            </button>
-            <button class="ghost-button ghost-button--small" type="button" @click="emit('clear-auth', 'bilibili')">
-              清除
-            </button>
-          </div>
+      <div class="auth-compact">
+        <div class="auth-compact__summary">
+          <span>授权：抖音{{ authText('douyin') }} · B站{{ authText('bilibili') }}</span>
+          <button class="ghost-button ghost-button--small" type="button" @click="authExpanded = !authExpanded">管理</button>
         </div>
         <p v-if="authHint" class="helper-text auth-strip__hint">{{ authHint }}</p>
+        <div v-if="authExpanded" class="auth-compact__details">
+          <div class="auth-strip__row">
+            <div class="auth-strip__status">
+              <span>抖音</span>
+              <strong>{{ authText('douyin') }}</strong>
+            </div>
+            <div class="auth-strip__actions">
+              <button class="secondary-button secondary-button--small" type="button" @click="emit('start-auth', 'douyin')">
+                授权
+              </button>
+              <button class="ghost-button ghost-button--small" type="button" @click="emit('clear-auth', 'douyin')">
+                清除
+              </button>
+            </div>
+          </div>
+          <div class="auth-strip__row">
+            <div class="auth-strip__status">
+              <span>B站</span>
+              <strong>{{ authText('bilibili') }}</strong>
+            </div>
+            <div class="auth-strip__actions">
+              <button class="secondary-button secondary-button--small" type="button" @click="emit('start-auth', 'bilibili')">
+                授权
+              </button>
+              <button class="ghost-button ghost-button--small" type="button" @click="emit('clear-auth', 'bilibili')">
+                清除
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <label class="field">
-        <span class="field-label">视频链接</span>
-        <input
+        <span class="field-label">视频链接 / 分享口令</span>
+        <textarea
           :value="videoLink"
-          class="text-input"
-          type="text"
-          placeholder="粘贴本人或授权视频链接"
+          class="text-area share-input"
+          placeholder="粘贴本人或授权视频链接，也可以粘贴完整分享口令"
           @input="emit('update:videoLink', $event.target.value)"
-        />
+        ></textarea>
       </label>
 
-      <div class="action-grid">
-        <button class="primary-button" type="button" :disabled="isReading" @click="emit('read-video')">
-          {{ isReading ? '读取中...' : material ? '重新读取' : '读取素材' }}
+      <div class="main-action">
+        <button class="primary-button primary-button--full main-action__button" type="button" :disabled="isReading || transcriptionLoading" @click="emit('extract-script')">
+          {{ primaryButtonText }}
         </button>
-        <button class="secondary-button" type="button" @click="triggerFileSelect">本地上传</button>
-        <button class="secondary-button" type="button" @click="emit('manual-input')">手动输入</button>
+        <div class="button-row button-row--compact">
+          <button class="ghost-button ghost-button--small" type="button" @click="triggerFileSelect">本地上传</button>
+          <button class="ghost-button ghost-button--small" type="button" @click="emit('manual-input')">手动输入</button>
+        </div>
+        <p class="helper-text main-action__status">{{ flowStatusText }}</p>
       </div>
 
       <p v-if="uploadedFileName" class="helper-text">已选择文件：{{ uploadedFileName }}</p>
-      <div v-if="materialSummary" class="info-block">
-        <span>{{ materialSummary }}</span>
-      </div>
       <div v-if="!material" class="material-lamp-row">
         <span class="status-dot" :class="`status-dot--${materialLamp}`"></span>
         <strong>{{ materialLampText }}</strong>
@@ -203,63 +218,31 @@ const authText = (platform) => {
         :material="material"
         :material-lamp="materialLamp"
         :material-lamp-text="materialLampText"
-        :transcription-loading="transcriptionLoading"
-        :can-extract="Boolean(material) && !transcriptionLoading"
         @view-assets="assetDrawerOpen = true"
       />
 
       <input ref="fileInputRef" class="hidden-input" type="file" accept="video/*" @change="onFileChange" />
 
-      <div class="sub-panel">
+      <label class="field script-result">
         <div class="field-headline">
-          <span class="field-label">视频文案提取</span>
-          <span class="field-meta">{{ transcriptionLoading ? '处理中' : subtitleStatus || '未开始' }}</span>
-        </div>
-        <div class="material-summary-grid">
-          <div class="info-block">
-            <span>当前状态：{{ transcriptionLoading ? '处理中' : subtitleStatus || '未开始' }}</span>
-          </div>
-          <div class="info-block">
-            <span>使用素材：{{ materialUsageLabel }}</span>
-          </div>
-        </div>
-        <div class="button-row button-row--compact">
-          <button
-            class="secondary-button secondary-button--small"
-            type="button"
-            :disabled="!materialLocalReady || transcriptionLoading"
-            @click="emit('extract-script')"
-            :title="materialLocalReady ? '' : '请先读取素材'"
-          >
-            {{ transcriptionLoading ? '提取中...' : rawScript ? '重新提取' : '提取视频文案' }}
-          </button>
-        </div>
-      </div>
-
-      <label class="field">
-        <div class="field-headline">
-          <span class="field-label">原始文案</span>
+          <span class="field-label">文案结果</span>
           <span class="field-meta">{{ charCount }} 字</span>
         </div>
         <div class="field-subline">
-          <span class="field-meta">当前内容：{{ scriptSourceLabel }}</span>
-          <div class="button-row button-row--compact">
-            <button
-              class="ghost-button ghost-button--small"
-              type="button"
-              :disabled="!scriptDetailReady"
-              @click="emit('view-script-detail')"
-            >
-              查看识别详情
-            </button>
-          </div>
+          <span class="field-meta">{{ scriptSourceLabel }}</span>
         </div>
         <textarea
           :value="rawScript"
           class="text-area text-area--tall"
-          placeholder="这里优先回填平台发布文案；后续接入 ASR 后，再用 transcript 覆盖。"
+          placeholder="提取完成后，这里会回填视频口播文案。你也可以直接编辑。"
           @input="emit('update:rawScript', $event.target.value)"
         ></textarea>
+        <div class="button-row button-row--compact">
+          <button class="secondary-button secondary-button--small" type="button" :disabled="!rawScript.trim()" @click="copyText(rawScript, '已复制文案')">
+            复制文案
+          </button>
+        </div>
+        <p v-if="copyHint" class="helper-text helper-text--success">{{ copyHint }}</p>
       </label>
     </div>
 

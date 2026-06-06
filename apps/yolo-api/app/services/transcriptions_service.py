@@ -16,8 +16,15 @@ from app.common import error_code
 from app.common.exceptions import AppException
 from app.config.paths import STUDIO_TRANSCRIPTION_RUNTIME_DIR
 from app.config.settings import get_asr_provider, get_whisper_vad_filter
+from app.services.ocr_subtitle_service import OcrResult, extract_ocr_subtitles
 from app.services.subtitle_tool.subtitle_pack import extract_audio, transcribe, write_srt
-from app.tasks.task_store import append_log, material_dir, material_inputs_dir, material_outputs_dir
+from app.services.transcription_fusion_service import (
+    apply_asr_corrections,
+    build_final_text_from_asr_ocr,
+    build_hotwords,
+    build_initial_prompt,
+)
+from app.tasks.task_store import append_log, material_dir, material_inputs_dir, material_outputs_dir, read_material
 
 RUNTIME_ROOT = STUDIO_TRANSCRIPTION_RUNTIME_DIR
 RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
@@ -100,6 +107,8 @@ def build_downloads(task_id: str) -> dict[str, str]:
         "asrText": f"/api/v1/files/transcriptions/{task_id}/asr_text.txt",
         "asrSegments": f"/api/v1/files/transcriptions/{task_id}/asr_segments.json",
         "correctedAsrText": f"/api/v1/files/transcriptions/{task_id}/corrected_asr_text.txt",
+        "ocrText": f"/api/v1/files/transcriptions/{task_id}/ocr_text.txt",
+        "ocrSubtitles": f"/api/v1/files/transcriptions/{task_id}/ocr_subtitles.json",
         "finalTranscript": f"/api/v1/files/transcriptions/{task_id}/final_transcript.txt",
         "result": f"/api/v1/files/transcriptions/{task_id}/transcription_result.json",
         "metadata": f"/api/v1/files/transcriptions/{task_id}/metadata.json",
@@ -117,6 +126,8 @@ def _output_file_map(task_id: str) -> dict[str, Path]:
         "asr_text.txt": outputs / "asr_text.txt",
         "asr_segments.json": outputs / "asr_segments.json",
         "corrected_asr_text.txt": outputs / "corrected_asr_text.txt",
+        "ocr_text.txt": outputs / "ocr_text.txt",
+        "ocr_subtitles.json": outputs / "ocr_subtitles.json",
         "final_transcript.txt": outputs / "final_transcript.txt",
         "transcription_result.json": outputs / "transcription_result.json",
         "metadata.json": outputs / "metadata.json",
@@ -137,6 +148,8 @@ def _material_output_files(material_id: str) -> dict[str, Path]:
         "asr_text.txt": outputs / "asr_text.txt",
         "asr_segments.json": outputs / "asr_segments.json",
         "corrected_asr_text.txt": outputs / "corrected_asr_text.txt",
+        "ocr_text.txt": outputs / "ocr_text.txt",
+        "ocr_subtitles.json": outputs / "ocr_subtitles.json",
         "final_transcript.txt": outputs / "final_transcript.txt",
         "transcript.txt": outputs / "transcript.txt",
         "subtitles.srt": outputs / "subtitles.srt",
@@ -221,13 +234,20 @@ def process_transcription_task(
         task.update({"status": "running", "stage": "读取素材元信息", "progress": 10, "message": "正在读取视频信息"})
         write_task(task_id, task)
         source_video, metadata = _validate_local_source_video(material_id)
+        try:
+            material_payload = read_material(material_id)
+        except Exception as exc:
+            append_log(material_id, f"[MATERIAL_READ_WARNING] {exc}")
+            material_payload = {}
+        hotwords = build_hotwords(material_payload)
+        initial_prompt = build_initial_prompt(hotwords)
         append_log(material_id, f"[ASR_PROVIDER] {provider}")
         append_log(material_id, f"[WHISPER_MODEL] {model}")
         append_log(material_id, f"[WHISPER_LANGUAGE] {language}")
         append_log(material_id, f"[WHISPER_DEVICE] {device}")
         append_log(material_id, f"[WHISPER_COMPUTE_TYPE] {compute_type}")
         append_log(material_id, f"[WHISPER_VAD_FILTER] {str(get_whisper_vad_filter()).lower()}")
-        append_log(material_id, "[WHISPER_INITIAL_PROMPT] false")
+        append_log(material_id, f"[WHISPER_INITIAL_PROMPT] {str(bool(initial_prompt)).lower()}")
 
         outputs = task_outputs_dir(task_id)
         material_output_files = _material_output_files(material_id)
@@ -257,7 +277,7 @@ def process_transcription_task(
                 compute_type=compute_type,
                 beam_size=beam_size,
                 vad_filter=get_whisper_vad_filter(),
-                initial_prompt=None,
+                initial_prompt=initial_prompt,
             )
         except SystemExit as exc:
             raise AppException(
@@ -279,10 +299,38 @@ def process_transcription_task(
             for seg in raw_segments
         ]
         asr_text = "\n".join(segment["text"] for segment in segments).strip()
-        corrected_asr_text = ""
-        corrections_applied: list[dict[str, Any]] = []
-        final_text = asr_text
-        append_log(material_id, "[ASR_CORRECTIONS] 0")
+        corrected_asr_text, asr_corrections = apply_asr_corrections(asr_text, hotwords)
+        append_log(material_id, f"[ASR_CORRECTIONS] {len(asr_corrections)}")
+
+        task.update({"stage": "识别画面字幕", "progress": 68, "message": "正在识别视频硬字幕"})
+        write_task(task_id, task)
+        try:
+            ocr_result = extract_ocr_subtitles(source_video, material_outputs_dir(material_id))
+        except Exception as exc:
+            append_log(material_id, f"[OCR_EXCEPTION] {exc}")
+            append_log(material_id, traceback.format_exc())
+            ocr_result = OcrResult(
+                ocrStatus="failed",
+                errorMessage=str(exc),
+                warnings=["OCR 处理失败，已使用 ASR 结果。"],
+            )
+        append_log(material_id, f"[OCR_STATUS] {ocr_result.ocrStatus}")
+        append_log(material_id, f"[OCR_TEXT_LENGTH] {len(ocr_result.ocrText or '')}")
+
+        fusion_result = build_final_text_from_asr_ocr(
+            asr_text=asr_text,
+            asr_segments=segments,
+            corrected_asr_text=corrected_asr_text,
+            ocr_text=ocr_result.ocrText,
+            ocr_segments=ocr_result.ocrSegments,
+            ocr_status=ocr_result.ocrStatus,
+        )
+        final_text = fusion_result.finalText or corrected_asr_text or asr_text
+        warnings = [*ocr_result.warnings, *fusion_result.warnings]
+        corrections_applied: list[dict[str, Any]] = [*asr_corrections, *fusion_result.correctionsApplied]
+        append_log(material_id, f"[FUSION_SOURCE] {fusion_result.fusionSource}")
+        append_log(material_id, f"[FUSION_CORRECTIONS] {len(corrections_applied)}")
+        append_log(material_id, f"[FUSION_WARNINGS] {len(warnings)}")
 
         task.update({"stage": "生成字幕文件", "progress": 80, "message": "正在写入字幕和 transcript"})
         write_task(task_id, task)
@@ -294,6 +342,8 @@ def process_transcription_task(
         asr_text_path = material_output_files["asr_text.txt"]
         asr_segments_path = material_output_files["asr_segments.json"]
         corrected_asr_text_path = material_output_files["corrected_asr_text.txt"]
+        ocr_text_path = material_output_files["ocr_text.txt"]
+        ocr_subtitles_path = material_output_files["ocr_subtitles.json"]
         final_transcript_path = material_output_files["final_transcript.txt"]
         transcription_result_path = material_output_files["transcription_result.json"]
         asr_segment_payload = {
@@ -306,13 +356,23 @@ def process_transcription_task(
         }
         transcription_result_payload = {
             "materialId": material_id,
+            "materialKey": material_id,
             "engine": provider,
             "model": model,
             "language": language,
             "asrText": asr_text,
             "correctedAsrText": corrected_asr_text,
+            "ocrText": ocr_result.ocrText,
             "finalText": final_text,
-            "hotwords": [],
+            "ocrStatus": ocr_result.ocrStatus,
+            "ocrSegments": ocr_result.ocrSegments,
+            "ocrFrameCount": ocr_result.frameCount,
+            "ocrTextLength": ocr_result.textLength,
+            "ocrErrorMessage": ocr_result.errorMessage,
+            "fusionSource": fusion_result.fusionSource,
+            "fusionStats": fusion_result.fusionStats,
+            "warnings": warnings,
+            "hotwords": hotwords,
             "correctionsApplied": corrections_applied,
         }
 
@@ -325,8 +385,17 @@ def process_transcription_task(
                 "transcript": final_text,
                 "asrText": asr_text,
                 "correctedAsrText": corrected_asr_text,
+                "ocrText": ocr_result.ocrText,
                 "finalText": final_text,
                 "segments": segments,
+                "ocrSegments": ocr_result.ocrSegments,
+                "ocrStatus": ocr_result.ocrStatus,
+                "ocrFrameCount": ocr_result.frameCount,
+                "ocrTextLength": ocr_result.textLength,
+                "ocrErrorMessage": ocr_result.errorMessage,
+                "fusionSource": fusion_result.fusionSource,
+                "fusionStats": fusion_result.fusionStats,
+                "warnings": warnings,
                 "createdAt": now(),
             },
         )
@@ -342,7 +411,9 @@ def process_transcription_task(
                 data={"errorType": "subtitle_generate_failed", "materialId": material_id},
             ) from exc
         asr_text_path.write_text(asr_text + ("\n" if asr_text else ""), encoding="utf-8")
-        corrected_asr_text_path.write_text("", encoding="utf-8")
+        corrected_asr_text_path.write_text(corrected_asr_text + ("\n" if corrected_asr_text else ""), encoding="utf-8")
+        ocr_text_path.write_text(ocr_result.ocrText + ("\n" if ocr_result.ocrText else ""), encoding="utf-8")
+        write_json(ocr_subtitles_path, ocr_result.ocrSegments)
         final_transcript_path.write_text(final_text + ("\n" if final_text else ""), encoding="utf-8")
         write_json(asr_segments_path, asr_segment_payload)
         write_json(transcription_result_path, transcription_result_payload)
@@ -352,6 +423,8 @@ def process_transcription_task(
         _copy_file(asr_text_path, outputs / "asr_text.txt")
         _copy_file(asr_segments_path, outputs / "asr_segments.json")
         _copy_file(corrected_asr_text_path, outputs / "corrected_asr_text.txt")
+        _copy_file(ocr_text_path, outputs / "ocr_text.txt")
+        _copy_file(ocr_subtitles_path, outputs / "ocr_subtitles.json")
         _copy_file(final_transcript_path, outputs / "final_transcript.txt")
         _copy_file(transcription_result_path, outputs / "transcription_result.json")
         metadata_payload = {
@@ -359,6 +432,8 @@ def process_transcription_task(
             "materialId": material_id,
             "video": metadata,
             "segmentCount": len(segments),
+            "ocrStatus": ocr_result.ocrStatus,
+            "fusionSource": fusion_result.fusionSource,
             "createdAt": now(),
         }
         write_json(outputs / "metadata.json", metadata_payload)
@@ -375,13 +450,21 @@ def process_transcription_task(
                 "transcript": final_text,
                 "asr_text": asr_text,
                 "corrected_asr_text": corrected_asr_text,
+                "ocr_text": ocr_result.ocrText,
+                "ocr_status": ocr_result.ocrStatus,
+                "ocr_frame_count": ocr_result.frameCount,
+                "ocr_text_length": ocr_result.textLength,
+                "ocr_error_message": ocr_result.errorMessage,
                 "final_text": final_text,
                 "segments": segments,
                 "engine": provider,
                 "model": model,
                 "language": language,
-                "hotwords": [],
+                "hotwords": hotwords,
                 "corrections_applied": corrections_applied,
+                "fusion_source": fusion_result.fusionSource,
+                "fusion_stats": fusion_result.fusionStats,
+                "warnings": warnings,
                 "subtitle_files": _material_subtitle_files(material_id),
                 "downloads": build_downloads(task_id),
             }
@@ -497,7 +580,15 @@ def get_transcription(task_id: str) -> dict[str, Any]:
         "transcript": task.get("final_text") or task.get("corrected_asr_text") or task.get("asr_text") or task.get("full_text", ""),
         "asrText": task.get("asr_text", ""),
         "correctedAsrText": task.get("corrected_asr_text", ""),
+        "ocrText": task.get("ocr_text", ""),
         "finalText": task.get("final_text", ""),
+        "ocrStatus": task.get("ocr_status", ""),
+        "ocrFrameCount": task.get("ocr_frame_count", 0),
+        "ocrTextLength": task.get("ocr_text_length", 0),
+        "ocrErrorMessage": task.get("ocr_error_message"),
+        "fusionSource": task.get("fusion_source", ""),
+        "fusionStats": task.get("fusion_stats") or {},
+        "warnings": task.get("warnings") or [],
         "segments": task.get("segments") or [],
         "engine": task.get("engine", ""),
         "model": task.get("model", ""),

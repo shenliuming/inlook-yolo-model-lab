@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from app.services.material_download_service import download_material_video
 from app.tasks.task_store import (
     append_log,
     init_material_runtime,
+    MATERIAL_ROOT,
     material_cache_dir,
     material_inputs_dir,
     material_json_path,
@@ -133,6 +135,140 @@ def _local_video_path(material_id: str) -> Path:
 
 def _local_video_url(material_id: str) -> str:
     return f"/api/v1/materials/{material_id}/files/source.mp4"
+
+
+def _extract_resolved_video_id(*urls: str) -> str:
+    for url in urls:
+        value = str(url or "")
+        match = re.search(r"/(?:share/)?video/(\d+)", value)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def _iter_material_payloads(exclude_material_id: str = ""):
+    if not MATERIAL_ROOT.exists():
+        return
+    paths = sorted(MATERIAL_ROOT.glob("*/material.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in paths:
+        candidate_id = path.parent.name
+        if candidate_id == exclude_material_id:
+            continue
+        try:
+            payload = read_json(path)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            yield candidate_id, payload
+
+
+def _match_cached_material(candidate: dict, *, source_type: str, normalized_url: str, resolved_video_id: str = "") -> bool:
+    if str(candidate.get("sourceType") or "").strip().lower() != str(source_type or "").strip().lower():
+        return False
+
+    known_urls = {
+        str(candidate.get("sourceUrl") or "").strip(),
+        str(candidate.get("normalizedUrl") or "").strip(),
+    }
+    if normalized_url and normalized_url in known_urls:
+        return True
+
+    candidate_video_id = _extract_resolved_video_id(
+        str(candidate.get("finalUrl") or ""),
+        str(candidate.get("sourceUrl") or ""),
+        str(candidate.get("normalizedUrl") or ""),
+    )
+    return bool(resolved_video_id and candidate_video_id and candidate_video_id == resolved_video_id)
+
+
+def _candidate_source_is_valid(candidate_id: str) -> bool:
+    source_path = _local_video_path(candidate_id)
+    if not source_path.exists():
+        return False
+    try:
+        if source_path.stat().st_size < 10 * 1024:
+            return False
+        metadata = ffmpeg_client.probe_video(source_path)
+    except Exception:
+        return False
+    return int(metadata.get("width") or 0) > 0 and int(metadata.get("height") or 0) > 0 and float(metadata.get("duration") or 0) > 0
+
+
+def _clone_cached_material_source(
+    *,
+    target_material_id: str,
+    parsed,
+    cached_material_id: str,
+    cached_payload: dict,
+    reason: str,
+) -> dict | None:
+    if not _candidate_source_is_valid(cached_material_id):
+        append_log(target_material_id, f"[CACHE_REUSE_SKIP] materialId={cached_material_id} reason=invalid_source")
+        return None
+
+    source_path = _local_video_path(cached_material_id)
+    target_path = _local_video_path(target_material_id)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if source_path.resolve() != target_path.resolve():
+        shutil.copy2(source_path, target_path)
+
+    cached_video = cached_payload.get("video") if isinstance(cached_payload.get("video"), dict) else {}
+    payload = {
+        **cached_payload,
+        "materialId": target_material_id,
+        "materialKey": target_material_id,
+        "sourceUrl": parsed.normalized_url,
+        "normalizedUrl": parsed.normalized_url,
+        "rawInput": parsed.raw_input,
+        "cacheHit": True,
+        "cacheStatus": "local_ready",
+        "downloadStatus": "downloaded",
+        "localFileStatus": "exists",
+        "localVideoPath": str(target_path),
+        "localVideoUrl": _local_video_url(target_material_id),
+        "localFileSize": int(target_path.stat().st_size),
+        "lastCheckAt": _now_iso(),
+        "lastError": None,
+        "status": "ready",
+        "reusedFromMaterialId": cached_material_id,
+        "reusedFromReason": reason,
+        "video": {
+            **cached_video,
+            "url": _local_video_url(target_material_id),
+            "remoteUrl": str(cached_video.get("remoteUrl") or cached_video.get("url") or ""),
+            "fileSize": int(target_path.stat().st_size),
+        },
+    }
+    write_material(target_material_id, payload)
+    append_log(target_material_id, f"[CACHE_REUSE_HIT] materialId={cached_material_id} reason={reason}")
+    return _hydrate_local_file_state(target_material_id, {**payload, "cacheHit": True})
+
+
+def _reuse_cached_material_source(
+    *,
+    target_material_id: str,
+    parsed,
+    resolved_video_id: str = "",
+    reason: str,
+) -> dict | None:
+    for cached_material_id, cached_payload in _iter_material_payloads(target_material_id):
+        if not _match_cached_material(
+            cached_payload,
+            source_type=parsed.source_type,
+            normalized_url=parsed.normalized_url,
+            resolved_video_id=resolved_video_id,
+        ):
+            continue
+        reused = _clone_cached_material_source(
+            target_material_id=target_material_id,
+            parsed=parsed,
+            cached_material_id=cached_material_id,
+            cached_payload=cached_payload,
+            reason=reason,
+        )
+        if reused is not None:
+            return reused
+    return None
 
 
 def _build_material_shell(*, material_id: str, parsed) -> dict:
@@ -803,7 +939,27 @@ def extract_material(*, source_type: str, raw_input: str, raw_url: str = "") -> 
         ):
             return hydrated
         if _has_material_metadata(hydrated):
+            resolved_video_id = _extract_resolved_video_id(
+                str(hydrated.get("finalUrl") or ""),
+                str(hydrated.get("sourceUrl") or ""),
+                str(hydrated.get("normalizedUrl") or ""),
+            )
+            reused_existing = _reuse_cached_material_source(
+                target_material_id=material_id,
+                parsed=parsed,
+                resolved_video_id=resolved_video_id,
+                reason="existing_metadata_video_id",
+            )
+            if reused_existing is not None:
+                return reused_existing
             return download_material_video(material_id)
+    reused_by_source = _reuse_cached_material_source(
+        target_material_id=material_id,
+        parsed=parsed,
+        reason="source_url",
+    )
+    if reused_by_source is not None:
+        return reused_by_source
     try:
         if parsed.source_type == "douyin" and settings.get_copy_pilot_enabled():
             append_log(material_id, "[COPY_PILOT_ENABLED] true")
@@ -816,6 +972,19 @@ def extract_material(*, source_type: str, raw_input: str, raw_url: str = "") -> 
             and metadata.get("localFileStatus") == "exists"
         ):
             return metadata
+        resolved_video_id = _extract_resolved_video_id(
+            str(metadata.get("finalUrl") or ""),
+            str(metadata.get("sourceUrl") or ""),
+            str(metadata.get("normalizedUrl") or ""),
+        )
+        reused_by_video_id = _reuse_cached_material_source(
+            target_material_id=material_id,
+            parsed=parsed,
+            resolved_video_id=resolved_video_id,
+            reason="resolved_video_id",
+        )
+        if reused_by_video_id is not None:
+            return reused_by_video_id
         return download_material_video(material_id)
     except AppException as exc:
         error_type = exc.data.get("errorType") if isinstance(exc.data, dict) else None
@@ -920,6 +1089,12 @@ def get_material_file(material_id: str, filename: str) -> Path:
         Path("transcript.txt"),
         Path("subtitles.srt"),
         Path("subtitles.vtt"),
+        Path("asr_text.txt"),
+        Path("asr_segments.json"),
+        Path("corrected_asr_text.txt"),
+        Path("ocr_text.txt"),
+        Path("ocr_subtitles.json"),
+        Path("final_transcript.txt"),
         Path("transcription_result.json"),
     ]
     valid_names = {item.name for item in candidates if item is not None}

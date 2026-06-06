@@ -15,7 +15,7 @@ class MaterialServiceStep2Test(unittest.TestCase):
         shutil.rmtree(material_dir(material_id), ignore_errors=True)
 
     def test_case_1_same_link_has_same_material_key_and_second_call_hits_cache(self) -> None:
-        raw_input = "https://v.douyin.com/w2_bZi78r3k/"
+        raw_input = "https://v.douyin.com/unitStep2SameLink111/"
         parsed = parse_material_input(raw_input, "auto")
         material_id = ms.build_material_key(parsed.source_type, parsed.normalized_url)
         self._cleanup(material_id)
@@ -136,6 +136,108 @@ class MaterialServiceStep2Test(unittest.TestCase):
         self.assertEqual(payload["downloadStatus"], "downloaded")
         self.assertEqual(payload["localFileStatus"], "exists")
         self.assertTrue(str(payload["localVideoUrl"]).endswith("/source.mp4"))
+
+    def test_case_8_reuses_legacy_cache_by_source_url_before_extracting(self) -> None:
+        raw_input = "https://v.douyin.com/legacyReuse111/"
+        parsed = parse_material_input(raw_input, "auto")
+        material_id = ms.build_material_key(parsed.source_type, parsed.normalized_url)
+        legacy_id = "mt_legacy_source_reuse"
+        self._cleanup(material_id)
+        self._cleanup(legacy_id)
+        self.addCleanup(self._cleanup, material_id)
+        self.addCleanup(self._cleanup, legacy_id)
+
+        init_material_runtime(legacy_id)
+        legacy_source = material_inputs_dir(legacy_id) / "source.mp4"
+        legacy_source.write_bytes(b"x" * (12 * 1024))
+        write_material(
+            legacy_id,
+            {
+                "materialId": legacy_id,
+                "materialKey": legacy_id,
+                "sourceType": "douyin",
+                "sourceUrl": parsed.normalized_url,
+                "normalizedUrl": parsed.normalized_url,
+                "finalUrl": "https://www.douyin.com/video/1000000000000000001",
+                "title": "旧缓存素材",
+                "video": {"url": "/api/v1/materials/legacy/files/source.mp4", "sources": []},
+                "cacheStatus": "local_ready",
+                "downloadStatus": "downloaded",
+                "localFileStatus": "exists",
+            },
+        )
+
+        with mock.patch.object(ms.ffmpeg_client, "probe_video", return_value={"duration": 7.0, "width": 720, "height": 1280}):
+            with mock.patch.object(ms, "_extract_copy_pilot_material") as extractor:
+                with mock.patch.object(ms, "download_material_video") as downloader:
+                    result = ms.extract_material(source_type="auto", raw_input=raw_input, raw_url="")
+
+        extractor.assert_not_called()
+        downloader.assert_not_called()
+        self.assertEqual(result["materialId"], material_id)
+        self.assertEqual(result["reusedFromMaterialId"], legacy_id)
+        self.assertEqual(result["cacheStatus"], "local_ready")
+        self.assertTrue((material_inputs_dir(material_id) / "source.mp4").exists())
+
+    def test_case_9_reuses_legacy_cache_by_resolved_video_id_after_metadata_extract(self) -> None:
+        raw_input = "https://v.douyin.com/newShortCode222/"
+        parsed = parse_material_input(raw_input, "auto")
+        material_id = ms.build_material_key(parsed.source_type, parsed.normalized_url)
+        legacy_id = "mt_legacy_video_id_reuse"
+        final_url = "https://www.douyin.com/video/1000000000000000002"
+        self._cleanup(material_id)
+        self._cleanup(legacy_id)
+        self.addCleanup(self._cleanup, material_id)
+        self.addCleanup(self._cleanup, legacy_id)
+
+        init_material_runtime(legacy_id)
+        legacy_source = material_inputs_dir(legacy_id) / "source.mp4"
+        legacy_source.write_bytes(b"x" * (12 * 1024))
+        write_material(
+            legacy_id,
+            {
+                "materialId": legacy_id,
+                "materialKey": legacy_id,
+                "sourceType": "douyin",
+                "sourceUrl": "https://v.douyin.com/oldShortCode222/",
+                "normalizedUrl": "https://v.douyin.com/oldShortCode222/",
+                "finalUrl": final_url,
+                "title": "同一个作品旧缓存",
+                "video": {"url": "/api/v1/materials/legacy/files/source.mp4", "sources": []},
+                "cacheStatus": "local_ready",
+                "downloadStatus": "downloaded",
+                "localFileStatus": "exists",
+            },
+        )
+
+        def fake_extract(target_material_id: str, target_parsed):
+            payload = {
+                **ms._build_material_shell(material_id=target_material_id, parsed=target_parsed),
+                "finalUrl": final_url,
+                "title": "同一个作品新短链",
+                "description": "新短链解析到同一个作品",
+                "video": {
+                    "url": "https://cdn.example.com/new-expiring-url.mp4",
+                    "sources": [{"label": "主视频", "url": "https://cdn.example.com/new-expiring-url.mp4"}],
+                },
+                "cacheStatus": "metadata_cached",
+                "downloadStatus": "not_downloaded",
+                "localFileStatus": "none",
+            }
+            return ms._persist_material_metadata(target_material_id, payload)
+
+        with mock.patch.object(ms.settings, "get_copy_pilot_enabled", return_value=True):
+            with mock.patch.object(ms.ffmpeg_client, "probe_video", return_value={"duration": 8.0, "width": 720, "height": 1280}):
+                with mock.patch.object(ms, "_extract_copy_pilot_material", side_effect=fake_extract) as extractor:
+                    with mock.patch.object(ms, "download_material_video") as downloader:
+                        result = ms.extract_material(source_type="auto", raw_input=raw_input, raw_url="")
+
+        extractor.assert_called_once()
+        downloader.assert_not_called()
+        self.assertEqual(result["materialId"], material_id)
+        self.assertEqual(result["reusedFromMaterialId"], legacy_id)
+        self.assertEqual(result["reusedFromReason"], "resolved_video_id")
+        self.assertTrue((material_inputs_dir(material_id) / "source.mp4").exists())
 
 
 if __name__ == "__main__":

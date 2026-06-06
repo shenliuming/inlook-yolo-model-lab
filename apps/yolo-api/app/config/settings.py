@@ -105,3 +105,27 @@ def get_copy_pilot_timeout() -> int:
         return max(5, min(120, int(raw)))
     except ValueError:
         return 30
+
+
+def get_llm_provider() -> str:
+    return os.getenv("LLM_PROVIDER", "").strip().lower()
+
+
+def get_llm_base_url() -> str:
+    return os.getenv("LLM_BASE_URL", "").strip()
+
+
+def get_llm_api_key() -> str:
+    return os.getenv("LLM_API_KEY", "").strip()
+
+
+def get_llm_model() -> str:
+    return os.getenv("LLM_MODEL", "").strip()
+
+
+def get_llm_timeout_seconds() -> int:
+    raw = os.getenv("LLM_TIMEOUT_SECONDS", "60").strip() or "60"
+    try:
+        return max(5, min(300, int(raw)))
+    except ValueError:
+        return 60

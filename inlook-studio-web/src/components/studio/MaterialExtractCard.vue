@@ -14,14 +14,6 @@ const props = defineProps({
     type: String,
     default: '未准备',
   },
-  transcriptionLoading: {
-    type: Boolean,
-    default: false,
-  },
-  canExtract: {
-    type: Boolean,
-    default: true,
-  },
 })
 
 const emit = defineEmits(['view-assets', 'extract-script'])
@@ -29,23 +21,14 @@ const copyHint = ref('')
 const visibleTags = computed(() => (props.material?.tags || []).slice(0, 5))
 const hiddenTagCount = computed(() => Math.max(0, (props.material?.tags || []).length - visibleTags.value.length))
 const sourceCount = computed(() => (props.material?.video?.sources || []).length)
-const downloadStatus = computed(() => {
-  const value = String(props.material?.downloadStatus || '')
-  const map = {
-    not_downloaded: '未下载',
-    downloading: '下载中',
-    downloaded: '已下载',
-    failed: '下载失败',
-    missing: '文件丢失',
-  }
-  return map[value] || '未就绪'
-})
 const statusDescription = computed(() => {
   if (props.materialLamp === 'ready') return '素材已可用，可继续提取视频文案'
   if (props.materialLamp === 'processing') return '正在读取素材并校验本地视频'
   if (props.materialLamp === 'failed') return '素材暂不可用，请重试或上传本地视频'
   return '请先读取素材'
 })
+const tagDisplay = computed(() => visibleTags.value.map((tag) => `#${tag}`).join(' '))
+const tagCopyText = computed(() => (props.material?.tags || []).map((tag) => `#${tag}`).join(' '))
 
 const copyText = async (text, hint) => {
   if (!text) return
@@ -67,15 +50,6 @@ const formatBytes = (value) => {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
-const downloadUrl = (url, filename = 'source-video.mp4') => {
-  if (!url) return
-  const link = document.createElement('a')
-  link.href = url
-  link.target = '_blank'
-  link.rel = 'noreferrer'
-  link.download = filename
-  link.click()
-}
 </script>
 
 <template>
@@ -99,39 +73,28 @@ const downloadUrl = (url, filename = 'source-video.mp4') => {
       <span>大小：{{ formatBytes(material.video?.fileSize) }}</span>
     </div>
 
-    <div class="field">
-      <span class="field-label">标题</span>
-      <div class="info-block"><span>{{ material.title || '未识别到独立标题' }}</span></div>
+    <div v-if="material.title" class="asset-line asset-line--single">
+      <span class="asset-line__label">标题：</span>
+      <span class="asset-line__text">{{ material.title }}</span>
+      <button class="ghost-button ghost-button--small" type="button" @click="copyText(material.title, '已复制标题')">复制</button>
     </div>
 
-    <div class="field">
-      <span class="field-label">发布文案</span>
-      <div class="info-block info-block--clamp"><span>{{ material.description || '暂无发布文案' }}</span></div>
+    <div class="asset-line asset-line--description">
+      <span class="asset-line__label">发布文案：</span>
+      <span class="asset-line__text">{{ material.description || '暂无发布文案' }}</span>
+      <button class="ghost-button ghost-button--small" type="button" :disabled="!material.description" @click="copyText(material.description, '已复制发布文案')">复制</button>
     </div>
 
-    <div class="field">
-      <span class="field-label">标签</span>
-      <div class="chip-group">
-        <span v-for="tag in visibleTags" :key="tag" class="chip-button chip-button--small">#{{ tag }}</span>
-        <span v-if="hiddenTagCount > 0" class="chip-button chip-button--small">+{{ hiddenTagCount }}</span>
-        <span v-if="!(material.tags || []).length" class="helper-text">暂无标签</span>
-      </div>
+    <div v-if="(material.tags || []).length" class="asset-line asset-line--single">
+      <span class="asset-line__label">标签：</span>
+      <span class="asset-line__text">{{ tagDisplay }}<template v-if="hiddenTagCount > 0"> +{{ hiddenTagCount }}</template></span>
+      <button class="ghost-button ghost-button--small" type="button" @click="copyText(tagCopyText, '已复制标签')">复制</button>
     </div>
 
-    <div class="field">
-      <span class="field-label">素材信息</span>
-      <div class="material-summary-grid">
-        <div class="info-block"><span>备用源：共 {{ sourceCount }} 个</span></div>
-        <div class="info-block"><span>下载状态：{{ downloadStatus }}</span></div>
-      </div>
-    </div>
+    <p class="material-card__subtitle">备用源：共 {{ sourceCount }} 个</p>
 
     <div class="button-row button-row--compact">
-      <button class="secondary-button secondary-button--small" type="button" @click="downloadUrl(material.localVideoUrl || material.video?.url)">
-        下载视频
-      </button>
       <button class="secondary-button secondary-button--small" type="button" @click="emit('view-assets')">查看素材</button>
-      <button class="secondary-button secondary-button--small" type="button" @click="copyText(material.description, '已复制文案')">复制文案</button>
       <button
         class="secondary-button secondary-button--small"
         type="button"

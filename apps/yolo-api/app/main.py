@@ -9,6 +9,7 @@ from app.common.logging import setup_logging
 from app.config.cors import build_cors_config
 from app.config.paths import OUTPUTS_DIR, REPORTS_DIR, ensure_runtime_directories
 from app.config.settings import get_yolo_config_dir
+from app.controllers.ai_controller import router as ai_router
 from app.controllers.content_lab_controller import router as content_lab_router
 from app.controllers.browser_auth_controller import router as browser_auth_router
 from app.controllers.file_controller import router as file_router
@@ -35,6 +36,7 @@ app.mount("/reports", StaticFiles(directory=REPORTS_DIR), name="reports")
 app.include_router(health_router)
 app.include_router(vision_router)
 app.include_router(content_lab_router)
+app.include_router(ai_router)
 app.include_router(browser_auth_router)
 app.include_router(tts_router)
 app.include_router(material_router)

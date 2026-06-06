@@ -45,21 +45,29 @@ class TranscriptionsServiceTest(unittest.TestCase):
 
         segments = [
             SimpleNamespace(start=0.0, end=1.2, text="你好，欢迎来到 INLOOK Studio"),
-            SimpleNamespace(start=1.2, end=2.4, text="这是一次真实转写测试"),
+            SimpleNamespace(start=1.2, end=2.4, text="这是一次 XGB 真实转写测试"),
         ]
 
         with mock.patch.object(ts.ffmpeg_client, "probe_video", return_value={"width": 720, "height": 1280, "duration": 12.3}):
             with mock.patch.object(ts, "get_asr_provider", return_value="faster_whisper"):
                 with mock.patch.object(ts, "extract_audio", side_effect=fake_extract_audio):
                     with mock.patch.object(ts, "transcribe", return_value=segments):
-                        result = ts.create_transcription_task(
-                            material_id=self.material_id,
-                            model="medium",
-                            language="zh",
-                            device="cpu",
-                            compute_type="int8",
-                            beam_size=5,
-                        )
+                        with mock.patch.object(
+                            ts,
+                            "extract_ocr_subtitles",
+                            return_value=ts.OcrResult(
+                                ocrStatus="skipped",
+                                warnings=["OCR 依赖未安装，已使用 ASR 结果。"],
+                            ),
+                        ):
+                            result = ts.create_transcription_task(
+                                material_id=self.material_id,
+                                model="medium",
+                                language="zh",
+                                device="cpu",
+                                compute_type="int8",
+                                beam_size=5,
+                            )
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["progress"], 100)
@@ -68,12 +76,19 @@ class TranscriptionsServiceTest(unittest.TestCase):
         self.assertEqual(result["engine"], "faster_whisper")
         self.assertEqual(result["model"], "medium")
         self.assertEqual(result["language"], "zh")
-        self.assertEqual(result["correctedAsrText"], "")
+        self.assertIn("ChatGPT 真实转写测试", result["correctedAsrText"])
         self.assertIn("真实转写测试", result["finalText"])
+        self.assertNotIn("XGB", result["finalText"])
+        self.assertEqual(result["ocrStatus"], "skipped")
+        self.assertEqual(result["fusionSource"], "asr_only")
+        self.assertIn("OCR 未可用", "".join(result["warnings"]))
         self.assertEqual(result["transcript"], result["finalText"])
         self.assertTrue((material_outputs_dir(self.material_id) / "audio.wav").exists())
         self.assertTrue((material_outputs_dir(self.material_id) / "asr_text.txt").exists())
         self.assertTrue((material_outputs_dir(self.material_id) / "asr_segments.json").exists())
+        self.assertTrue((material_outputs_dir(self.material_id) / "corrected_asr_text.txt").exists())
+        self.assertTrue((material_outputs_dir(self.material_id) / "ocr_text.txt").exists())
+        self.assertTrue((material_outputs_dir(self.material_id) / "ocr_subtitles.json").exists())
         self.assertTrue((material_outputs_dir(self.material_id) / "final_transcript.txt").exists())
         self.assertTrue((material_outputs_dir(self.material_id) / "transcript.txt").exists())
         self.assertTrue((material_outputs_dir(self.material_id) / "subtitles.srt").exists())

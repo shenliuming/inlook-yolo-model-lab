@@ -13,6 +13,7 @@ import { extractMaterial, uploadMaterial } from './api/materials'
 import { createTranscription } from './api/transcriptions'
 import { listTasks } from './api/tasks'
 import { createSynthesis, createTraining, getSynthesis, getTraining } from './api/tts'
+import { getAiStatus, rewriteCopy } from './api/ai'
 import { apiUrl } from './api/client'
 import {
   aspectOptions,
@@ -20,16 +21,12 @@ import {
   backgroundOptions,
   bgmOptions,
   emotionOptions,
-  initialRewriteResults,
-  lengthOptions,
   navigationItems,
-  platformOptions,
   promptTemplates,
   qualityOptions,
   sceneOptions,
   subtitlePositions,
   subtitleStyles,
-  toneOptions,
   voiceOptions,
 } from './data/mockData'
 
@@ -52,14 +49,22 @@ const transcriptionLoading = ref(false)
 const transcriptionId = ref('')
 const subtitleDownloads = ref({})
 const subtitleStatus = ref('未生成字幕')
+const lastInputRaw = ref('')
+const currentNormalizedUrl = ref('')
+const requestSeq = ref(0)
 
 const promptText = ref('把这段文案改成普通人真实分享口吻，开头更抓人，不要太营销，适合抖音 30 秒口播。')
-const selectedPlatform = ref(platformOptions[0])
-const selectedLength = ref(lengthOptions[1])
-const selectedTone = ref(toneOptions[0])
-const keepKeywords = ref('真实分享、自然表达、停留率')
-const rewriteResults = ref([...initialRewriteResults])
-const activeResultId = ref('A')
+const selectedRewriteTemplate = ref('')
+const rewriteResults = ref([])
+const activeResultId = ref('')
+const isRewriting = ref(false)
+const rewriteFailed = ref(false)
+const aiStatus = ref({
+  available: false,
+  provider: null,
+  model: null,
+  message: 'AI 改写服务未配置，请先配置模型服务。',
+})
 
 const selectedVoice = ref(voiceOptions[0])
 const selectedEmotion = ref(emotionOptions[0])
@@ -101,7 +106,7 @@ const authStatuses = ref({
   douyin: { platform: 'douyin', status: 'unauthorized', message: '未授权' },
   bilibili: { platform: 'bilibili', status: 'unauthorized', message: '未授权' },
 })
-const rawScriptSource = ref('manual')
+const originalTextSource = ref('empty')
 
 const renderingMeta = ref({
   sourceDuration: '--:--',
@@ -122,32 +127,82 @@ const selectedAvatar = computed(() =>
 )
 
 const scriptSourceLabel = computed(() => {
-  if (rawScriptSource.value === 'transcription') return '视频口播'
-  if (rawScriptSource.value === 'material') return '平台文案'
-  return '手动输入'
+  if (originalTextSource.value === 'video_transcript') return '视频口播'
+  if (originalTextSource.value === 'platform_description') return '平台文案'
+  if (originalTextSource.value === 'manual') return '手动文案'
+  return '空'
 })
 
-const scriptDetailReady = computed(() => false)
+const rewriteSourceUsageText = computed(() => {
+  if (originalTextSource.value === 'video_transcript') return '当前使用：视频口播'
+  if (originalTextSource.value === 'manual') return '当前使用：手动文案'
+  if (originalTextSource.value === 'platform_description') return '当前只有平台文案，建议先提取口播。'
+  return '请先提取或输入文案'
+})
+
+const sourceTextReadyForRewrite = computed(
+  () =>
+    Boolean(rawScript.value.trim()) &&
+    (originalTextSource.value === 'video_transcript' || originalTextSource.value === 'manual'),
+)
+
+const canRewrite = computed(() => aiRewriteAvailable.value && sourceTextReadyForRewrite.value)
+
+const canUsePlatformTextForRewrite = computed(
+  () => aiRewriteAvailable.value && originalTextSource.value === 'platform_description' && Boolean(rawScript.value.trim()),
+)
+
+const rewriteUnavailableMessage = computed(() => {
+  if (!aiRewriteAvailable.value) return aiUnavailableMessage.value
+  if (originalTextSource.value === 'platform_description') {
+    return '当前只有平台文案，请先提取视频口播，或手动确认后再改写。'
+  }
+  if (!rawScript.value.trim() || originalTextSource.value === 'empty') return '请先提取视频口播，或手动输入文案。'
+  return ''
+})
+
+const aiRewriteAvailable = computed(() => Boolean(aiStatus.value?.available))
+
+const aiUnavailableMessage = computed(() => {
+  if (aiRewriteAvailable.value) return ''
+  return aiStatus.value?.message || 'AI 改写服务未配置，请先配置模型服务。'
+})
+
 const materialLocalReady = computed(
   () =>
     material.value?.cacheStatus === 'local_ready' &&
     material.value?.downloadStatus === 'downloaded' &&
-    material.value?.localFileStatus === 'exists',
+    material.value?.localFileStatus === 'exists' &&
+    Boolean(material.value?.localVideoUrl),
 )
 
-const materialSummary = computed(() => {
-  if (!material.value) return ''
-  if (material.value.cacheStatus === 'local_ready') return '素材已准备好，可继续提取视频文案'
-  if (material.value.cacheStatus === 'metadata_cached') return '已有素材信息，视频未下载'
-  if (material.value.cacheStatus === 'local_missing') return '本地视频文件丢失，请重新下载'
-  if (material.value.cacheStatus === 'local_invalid') return '本地视频文件无效，请重新下载'
-  return `${material.value.sourceType} · ${material.value.video?.width || 0}x${material.value.video?.height || 0} · ${material.value.video?.duration || 0}s`
+const isMaterialPayloadReady = (payload) =>
+  payload?.cacheStatus === 'local_ready' &&
+  payload?.downloadStatus === 'downloaded' &&
+  payload?.localFileStatus === 'exists' &&
+  Boolean(payload?.localVideoUrl)
+
+const getMaterialUrl = (payload) => cleanUrl(payload?.normalizedUrl || payload?.sourceUrl || '')
+
+const activeMaterialUrl = computed(() => getMaterialUrl(material.value))
+
+const currentInputUrl = computed(() => extractVideoLinksFromInput(videoLink.value)[0]?.normalizedUrl || '')
+
+const isInputDirty = computed(() => {
+  const inputUrl = currentInputUrl.value
+  const activeUrl = activeMaterialUrl.value
+  if (!inputUrl) return Boolean(material.value && videoLink.value.trim() && videoLink.value.trim() !== activeUrl)
+  if (!material.value) return true
+  return inputUrl !== activeUrl
 })
+
+const currentMaterialLocalReady = computed(() => materialLocalReady.value && !isInputDirty.value)
 
 const materialLamp = computed(() => {
   if (isReading.value) return 'processing'
-  if (appError.value && !materialLocalReady.value) return 'failed'
-  if (materialLocalReady.value) return 'ready'
+  if (isInputDirty.value) return 'idle'
+  if (appError.value && !currentMaterialLocalReady.value) return 'failed'
+  if (currentMaterialLocalReady.value) return 'ready'
   return 'idle'
 })
 
@@ -237,9 +292,50 @@ const setAuthHintFromException = (error) => {
   console.error(error)
 }
 
+const nextRequestSeq = () => {
+  requestSeq.value += 1
+  return requestSeq.value
+}
+
+const isCurrentRequest = (requestSeqSnapshot) => requestSeqSnapshot === requestSeq.value
+
+const resetMaterialForDirtyInput = () => {
+  material.value = null
+  materialId.value = ''
+  rawScript.value = ''
+  originalTextSource.value = 'empty'
+  subtitleDownloads.value = {}
+  transcriptionId.value = ''
+  subtitleStatus.value = '未生成字幕'
+  previewState.value = 'idle'
+  renderProgress.value = 0
+  currentStep.value = '等待任务'
+  readStatus.value = '等待提取当前链接'
+  appError.value = ''
+}
+
+const handleVideoLinkInput = (value) => {
+  videoLink.value = value
+  const normalizedUrl = extractVideoLinksFromInput(value)[0]?.normalizedUrl || ''
+  currentNormalizedUrl.value = normalizedUrl
+
+  if (!material.value) return
+
+  const activeUrl = activeMaterialUrl.value
+  const trimmedInput = String(value || '').trim()
+  const inputChangedFromActiveMaterial = normalizedUrl
+    ? normalizedUrl !== activeUrl
+    : Boolean(trimmedInput && trimmedInput !== activeUrl)
+
+  if (!inputChangedFromActiveMaterial) return
+
+  requestSeq.value += 1
+  resetMaterialForDirtyInput()
+}
+
 const handleRawScriptInput = (value) => {
   rawScript.value = value
-  rawScriptSource.value = 'manual'
+  originalTextSource.value = value.trim() ? 'manual' : 'empty'
 }
 
 const fetchTasks = async () => {
@@ -421,7 +517,7 @@ const applyMaterial = (payload) => {
   material.value = payload
   materialId.value = payload.materialId
   rawScript.value = payload.description || payload.caption || payload.title || ''
-  rawScriptSource.value = rawScript.value ? 'material' : 'manual'
+  originalTextSource.value = rawScript.value ? 'platform_description' : 'empty'
   subtitleDownloads.value = {}
   transcriptionId.value = ''
   subtitleStatus.value = '未生成字幕'
@@ -537,26 +633,34 @@ const handleClearAuth = async (platform) => {
 }
 
 const handleFileSelected = async (file) => {
+  const requestSeqSnapshot = nextRequestSeq()
   uploadedFile.value = file
   uploadedFileName.value = file.name
+  currentNormalizedUrl.value = ''
+  lastInputRaw.value = file.name
   readStatus.value = `正在上传 ${file.name}...`
   material.value = null
   materialId.value = ''
   rawScript.value = ''
+  originalTextSource.value = 'empty'
   subtitleDownloads.value = {}
   isReading.value = true
   try {
     const formData = new FormData()
     formData.append('file', file)
     const payload = await uploadMaterial(formData)
+    if (!isCurrentRequest(requestSeqSnapshot)) return
     applyMaterial(normalizeMaterial(payload))
   } catch (error) {
+    if (!isCurrentRequest(requestSeqSnapshot)) return
     material.value = null
     materialId.value = ''
     readStatus.value = normalizeUiErrorMessage(error, '素材上传失败，请稍后重试。')
     setGlobalErrorFromException(error, '素材上传失败，请稍后重试。')
   } finally {
-    isReading.value = false
+    if (isCurrentRequest(requestSeqSnapshot)) {
+      isReading.value = false
+    }
   }
 }
 
@@ -564,36 +668,46 @@ const handleManualInput = () => {
   readStatus.value = '手动输入中'
 }
 
-const readMaterial = async () => {
+const readMaterial = async ({ rawInput, extractedLinks, primaryLink, requestSeqSnapshot }) => {
   appError.value = ''
   material.value = null
   materialId.value = ''
   rawScript.value = ''
+  originalTextSource.value = 'empty'
   subtitleDownloads.value = {}
-  const rawInput = videoLink.value.trim()
-  const extractedLinks = extractVideoLinksFromInput(rawInput)
+  transcriptionId.value = ''
+  subtitleStatus.value = '读取素材'
   if (!extractedLinks.length) {
     readStatus.value = '未识别到有效视频链接'
     appError.value = '未识别到有效视频链接，请粘贴抖音/B站/TikTok分享链接，或上传本地视频。'
-    return
+    return null
   }
-  const primaryLink = extractedLinks[0]
   pendingUrls.value = extractedLinks.slice(1).map((item) => item.normalizedUrl)
   videoLink.value = primaryLink.normalizedUrl
+  currentNormalizedUrl.value = primaryLink.normalizedUrl
   const detectedSourceType = primaryLink.sourceType
   if (detectedSourceType === 'unknown') {
     readStatus.value = '当前平台可能暂不稳定'
   }
   isReading.value = true
   try {
+    console.info('[StudioAlpha] POST /materials/extract', {
+      url: primaryLink.normalizedUrl,
+      sourceType: detectedSourceType,
+    })
     const payload = await extractMaterial({
       sourceType: detectedSourceType,
       input: rawInput,
       url: primaryLink.normalizedUrl,
       urls: extractedLinks.map((item) => item.normalizedUrl),
     })
-    applyMaterial(normalizeMaterial(payload))
+    if (!isCurrentRequest(requestSeqSnapshot)) return null
+    const normalizedPayload = normalizeMaterial(payload)
+    applyMaterial(normalizedPayload)
+    lastInputRaw.value = rawInput
+    return normalizedPayload
   } catch (error) {
+    if (!isCurrentRequest(requestSeqSnapshot)) return null
     const errorType = error.data?.errorType
     const sourceType = error.data?.sourceType
     if (errorType === 'platform_not_authorized') {
@@ -602,14 +716,17 @@ const readMaterial = async () => {
         setAuthStatus(sourceType, { status: 'unauthorized', message: error.message })
       }
       readStatus.value = '请先完成授权'
-      return
+      return null
     }
     const materialErrorMessage = normalizeMaterialReadErrorMessage(error)
     readStatus.value = materialErrorMessage
     appError.value = materialErrorMessage
     console.error(error)
+    return null
   } finally {
-    isReading.value = false
+    if (isCurrentRequest(requestSeqSnapshot)) {
+      isReading.value = false
+    }
   }
 }
 
@@ -620,22 +737,33 @@ const formatDuration = (seconds) => {
   return `00:${minutes}:${remain}`
 }
 
-const extractScript = async () => {
-  if (!materialId.value) {
+const extractCurrentMaterialScript = async (targetMaterial, requestSeqSnapshot) => {
+  const targetMaterialId = targetMaterial?.materialId || ''
+  if (!targetMaterialId) {
     appError.value = '请先完成素材导入。'
+    return
+  }
+  if (!isMaterialPayloadReady(targetMaterial)) {
+    appError.value = '请先读取素材。'
+    readStatus.value = '请先读取素材'
     return
   }
   transcriptionLoading.value = true
   subtitleStatus.value = '处理中'
   try {
+    console.info('[StudioAlpha] POST /transcriptions', {
+      materialId: targetMaterialId,
+      sourceUrl: targetMaterial.normalizedUrl || targetMaterial.sourceUrl || '',
+    })
     const task = await createTranscription({
-      materialId: materialId.value,
+      materialId: targetMaterialId,
       model: 'medium',
       language: 'zh',
       device: 'cpu',
       computeType: 'int8',
       beamSize: 5,
     })
+    if (!isCurrentRequest(requestSeqSnapshot)) return
     transcriptionId.value = task.transcriptionId
     currentStep.value = task.stage || '文案提取'
     previewState.value = 'done'
@@ -645,7 +773,7 @@ const extractScript = async () => {
       task.finalText || task.transcript || task.text || task.asrText || ''
     if (preferredText) {
       rawScript.value = preferredText
-      rawScriptSource.value = 'transcription'
+      originalTextSource.value = 'video_transcript'
       previewTitle.value = preferredText.slice(0, 24) || '已生成原始文案'
     }
     subtitleDownloads.value = task.subtitleFiles || {}
@@ -653,18 +781,173 @@ const extractScript = async () => {
     readStatus.value = '视频文案提取完成'
     await fetchTasks()
   } catch (error) {
+    if (!isCurrentRequest(requestSeqSnapshot)) return
     subtitleStatus.value = '失败'
     readStatus.value = normalizeUiErrorMessage(error, '视频文案提取失败')
     previewState.value = 'idle'
     setGlobalErrorFromException(error, '视频文案提取失败，请稍后重试。')
   } finally {
-    transcriptionLoading.value = false
+    if (isCurrentRequest(requestSeqSnapshot)) {
+      transcriptionLoading.value = false
+    }
   }
 }
 
+const extractScript = async () => {
+  appError.value = ''
+  const rawInput = videoLink.value.trim()
+  const extractedLinks = extractVideoLinksFromInput(rawInput)
+
+  if (!extractedLinks.length) {
+    if (material.value?.sourceType === 'local' && currentMaterialLocalReady.value) {
+      const requestSeqSnapshot = nextRequestSeq()
+      await extractCurrentMaterialScript(material.value, requestSeqSnapshot)
+      return
+    }
+    readStatus.value = '未识别到有效视频链接'
+    appError.value = '未识别到有效视频链接，请粘贴抖音/B站/TikTok分享链接，或上传本地视频。'
+    return
+  }
+
+  const primaryLink = extractedLinks[0]
+  const normalizedUrl = primaryLink.normalizedUrl
+  const activeUrl = activeMaterialUrl.value
+  const shouldReadMaterial = !currentMaterialLocalReady.value || normalizedUrl !== activeUrl
+  const requestSeqSnapshot = nextRequestSeq()
+  currentNormalizedUrl.value = normalizedUrl
+  videoLink.value = normalizedUrl
+
+  console.info('[StudioAlpha] extract:start', {
+    rawInput,
+    normalizedUrl,
+    activeMaterialUrl: activeUrl,
+    isInputDirty: shouldReadMaterial,
+  })
+
+  let payload = material.value
+  if (shouldReadMaterial) {
+    subtitleStatus.value = '读取素材'
+    payload = await readMaterial({
+      rawInput,
+      extractedLinks,
+      primaryLink,
+      requestSeqSnapshot,
+    })
+  }
+
+  if (!isCurrentRequest(requestSeqSnapshot)) return
+  if (!payload || !isMaterialPayloadReady(payload)) {
+    return
+  }
+  await extractCurrentMaterialScript(payload, requestSeqSnapshot)
+}
+
 const appendPromptTemplate = (template) => {
-  const separator = promptText.value.trim() ? '；' : ''
-  promptText.value = `${promptText.value}${separator}${template}`
+  const templateInstructions = {
+    爆款开头: '强化开头 3 秒钩子，先抛出具体痛点或反差，让用户愿意继续听。',
+    普通人分享: '把这段文案改成普通人真实分享口吻，表达自然，不要太像广告。',
+    知识讲解: '把这段文案改成知识博主讲解风格，逻辑清楚，观点明确，适合口播。',
+    小红书种草: '把这段文案改成小红书种草风格，真实、有体验感，不要过度营销。',
+    私域引流: '把这段文案改成自然引导私域的口播风格，克制表达，不要硬广。',
+    老板口播: '把这段文案改成老板本人出镜口播风格，表达直接，有观点，不要太像广告。',
+    课程转化: '把这段文案改成课程转化口播风格，突出价值和行动理由，不夸大承诺。',
+    避坑提醒: '把这段文案改成避坑提醒口播风格，先点出误区，再给出清晰建议。',
+  }
+  selectedRewriteTemplate.value = template
+  promptText.value = templateInstructions[template] || template
+  rewriteFailed.value = false
+}
+
+const loadAiStatus = async () => {
+  try {
+    aiStatus.value = await getAiStatus()
+  } catch (error) {
+    aiStatus.value = {
+      available: false,
+      provider: null,
+      model: null,
+      message: 'AI 改写服务状态获取失败，请检查后端服务。',
+    }
+    console.error(error)
+  }
+}
+
+const runRewrite = async (options = {}) => {
+  if (!aiRewriteAvailable.value) {
+    appError.value = aiUnavailableMessage.value
+    return
+  }
+  if (!rawScript.value.trim()) {
+    appError.value = '请先提取或输入文案结果。'
+    return
+  }
+  const allowPlatformText = Boolean(options.allowPlatformText)
+  if (!sourceTextReadyForRewrite.value && !(originalTextSource.value === 'platform_description' && allowPlatformText)) {
+    appError.value = rewriteUnavailableMessage.value
+    return
+  }
+  isRewriting.value = true
+  appError.value = ''
+  try {
+    const payload = await rewriteCopy({
+      sourceText: rawScript.value,
+      sourceTextType: originalTextSource.value,
+      allowPlatformText,
+      instruction: promptText.value,
+      template: selectedRewriteTemplate.value,
+    })
+    const results = Array.isArray(payload?.results) ? payload.results : []
+    rewriteResults.value = results.filter((item) => item?.content)
+    activeResultId.value = rewriteResults.value[0]?.id || ''
+    rewriteFailed.value = false
+    if (!rewriteResults.value.length) {
+      appError.value = 'AI 改写服务未返回可用文案。'
+      rewriteFailed.value = true
+    }
+  } catch (error) {
+    if (error.data?.errorType === 'llm_not_configured') {
+      aiStatus.value = {
+        available: false,
+        provider: null,
+        model: null,
+        message: 'AI 改写服务未配置，请先配置模型服务。',
+      }
+    }
+    rewriteFailed.value = true
+    setGlobalErrorFromException(error, 'AI 改写失败，请检查模型服务配置。')
+  } finally {
+    isRewriting.value = false
+  }
+}
+
+const useRewriteResult = (id) => {
+  const result = rewriteResults.value.find((item) => item.id === id)
+  if (!result?.content) return
+  rawScript.value = result.content
+  originalTextSource.value = 'manual'
+  activeResultId.value = id
+}
+
+const optimizeRewriteResult = (id) => {
+  const result = rewriteResults.value.find((item) => item.id === id)
+  if (!result?.content) return
+  activeResultId.value = id
+  promptText.value = `${promptText.value.trim()}；继续优化 ${result.title}，让表达更自然、更像真实口播。`
+}
+
+const copyRewriteResult = async (content) => {
+  if (!content) return
+  try {
+    await navigator.clipboard.writeText(content)
+  } catch {
+    appError.value = '复制失败，请手动选择文案复制。'
+  }
+}
+
+const rewriteWithPlatformText = async () => {
+  const confirmed = window.confirm('当前内容只是平台发布文案，不是视频口播。继续改写可能不完整，是否继续？')
+  if (!confirmed) return
+  await runRewrite({ allowPlatformText: true })
 }
 
 const handleReferenceAudioSelected = (event) => {
@@ -773,6 +1056,7 @@ const previewVoice = () => {
 }
 
 onMounted(() => {
+  loadAiStatus()
   startTaskPolling()
   loadAllAuthStatuses()
 })
@@ -802,46 +1086,46 @@ onBeforeUnmount(() => {
 
         <div class="workbench-grid">
           <MaterialScriptPanel
-            v-model:video-link="videoLink"
+            :video-link="videoLink"
             :raw-script="rawScript"
             :read-status="readStatus"
             :uploaded-file-name="uploadedFileName"
-            :material-summary="materialSummary"
             :material="material"
             :is-reading="isReading"
             :transcription-loading="transcriptionLoading"
             :subtitle-status="subtitleStatus"
             :material-lamp="materialLamp"
             :material-lamp-text="materialLampText"
+            :input-dirty="isInputDirty"
             :auth-statuses="authStatuses"
             :auth-hint="authHint"
             :script-source-label="scriptSourceLabel"
-            :script-detail-ready="scriptDetailReady"
-            :material-local-ready="materialLocalReady"
-            @read-video="readMaterial"
             @file-selected="handleFileSelected"
             @manual-input="handleManualInput"
             @extract-script="extractScript"
             @start-auth="handleStartAuth"
             @clear-auth="handleClearAuth"
+            @update:video-link="handleVideoLinkInput"
             @update:raw-script="handleRawScriptInput"
           />
 
           <PromptRewritePanel
             v-model:prompt-text="promptText"
-            v-model:selected-platform="selectedPlatform"
-            v-model:selected-length="selectedLength"
-            v-model:selected-tone="selectedTone"
-            v-model:keep-keywords="keepKeywords"
             :templates="promptTemplates"
-            :platforms="platformOptions"
-            :lengths="lengthOptions"
-            :tones="toneOptions"
             :rewrite-results="rewriteResults"
             :active-result-id="activeResultId"
-            :is-rewriting="false"
-            :feature-ready="false"
+            :is-rewriting="isRewriting"
+            :rewrite-failed="rewriteFailed"
+            :feature-ready="canRewrite"
+            :unavailable-message="rewriteUnavailableMessage"
+            :source-usage-text="rewriteSourceUsageText"
+            :can-use-platform-text="canUsePlatformTextForRewrite"
             @append-template="appendPromptTemplate"
+            @rewrite="runRewrite"
+            @rewrite-platform="rewriteWithPlatformText"
+            @use-result="useRewriteResult"
+            @optimize-result="optimizeRewriteResult"
+            @copy-result="copyRewriteResult"
           />
 
           <VoiceHumanPanel
@@ -899,7 +1183,7 @@ onBeforeUnmount(() => {
             :read-status="readStatus"
             :material-lamp="materialLamp"
             :material-lamp-text="materialLampText"
-            :material-local-ready="materialLocalReady"
+            :material-local-ready="currentMaterialLocalReady"
             :preview-state="previewState"
             :preview-title="previewTitle"
             :current-step="currentStep"

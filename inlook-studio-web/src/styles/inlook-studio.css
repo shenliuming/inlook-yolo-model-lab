@@ -231,13 +231,15 @@ button {
   gap: 14px;
   padding: 14px;
   min-width: 0;
+  overflow-x: auto;
 }
 
 .workbench-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 1.2fr) minmax(360px, 1.55fr) minmax(300px, 1.05fr) minmax(300px, 1.05fr) 320px;
+  grid-template-columns: minmax(460px, 500px) minmax(360px, 1fr) minmax(300px, 0.9fr) minmax(300px, 0.9fr) 320px;
   gap: 14px;
   align-items: start;
+  min-width: 1500px;
 }
 
 .panel,
@@ -363,7 +365,7 @@ button {
 .material-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 9px;
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -424,6 +426,39 @@ button {
   flex-wrap: wrap;
   color: var(--muted);
   font-size: 11px;
+}
+
+.asset-line {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 0;
+  border-top: 1px solid rgba(60, 63, 65, 0.72);
+}
+
+.asset-line__label {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.asset-line__text {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.asset-line--single .asset-line__text {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-line--description .asset-line__text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .material-summary-grid {
@@ -537,11 +572,37 @@ button {
 }
 
 .text-area--tall {
-  min-height: 220px;
+  min-height: 260px;
 }
 
 .text-area--prompt {
   min-height: 148px;
+}
+
+.share-input {
+  min-height: 84px;
+  max-height: 120px;
+  resize: vertical;
+}
+
+.main-action {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.main-action__button {
+  min-height: 42px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.main-action__status {
+  margin: 0;
+}
+
+.script-result {
+  padding-top: 2px;
 }
 
 .control-grid {
@@ -1261,8 +1322,30 @@ button {
   font-size: 12px;
 }
 
-.auth-strip {
+.auth-compact {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.auth-compact__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+}
+
+.auth-compact__details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #292b2f;
 }
 
 .auth-strip__row {

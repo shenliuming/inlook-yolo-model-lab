@@ -442,3 +442,17 @@ Please do not commit:
 - training datasets
 - generated subtitle outputs
 - generated recognition outputs
+
+## INLOOK Studio LLM 配置
+
+提示词改写、文案校对和标题生成统一走 OpenAI-compatible Chat Completions 服务。不要把真实 API Key 写进代码，使用环境变量：
+
+```bash
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://your-model-service/v1
+LLM_API_KEY=your_api_key
+LLM_MODEL=your-model-name
+LLM_TIMEOUT_SECONDS=60
+```
+
+未配置时 `GET /api/v1/ai/status` 会返回 `available=false`，前端会禁用 AI 改写按钮，不会生成 mock 文案。
