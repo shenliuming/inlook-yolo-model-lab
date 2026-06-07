@@ -14,9 +14,11 @@ from fastapi import BackgroundTasks, HTTPException, UploadFile
 from app.clients.moss_tts_client import moss_tts_client
 from app.config.paths import CONTENT_LAB_TTS_RUNTIME_DIR
 from app.config.settings import (
+    get_tts_engine,
     get_moss_tts_execution_provider,
     get_moss_tts_output_filename,
 )
+from app.services.tts_engines.cosyvoice_engine import cosyvoice_engine
 from app.utils.file_utils import safe_filename
 from app.utils.subprocess_utils import run_command
 
@@ -120,8 +122,10 @@ def allowed_download_files(task_id: str) -> dict[str, Path]:
     outputs = task_outputs_dir(task_id)
     return {
         "voice.wav": outputs / "voice.wav",
+        "final.wav": outputs / "final.wav",
         "metadata.json": outputs / "metadata.json",
         "status.json": outputs / "status.json",
+        "tts_request.json": outputs / "tts_request.json",
         "run.log": run_log_path(task_id),
     }
 
@@ -141,6 +145,8 @@ def create_status_payload(task_id: str, payload: dict[str, Any]) -> None:
 def get_tts_health() -> dict[str, Any]:
     runtime_root = RUNTIME_ROOT
     payload = moss_tts_client.health()
+    payload["configured_engine"] = get_tts_engine()
+    payload["cosyvoice"] = cosyvoice_engine.health()
     payload["runtime_root"] = str(runtime_root)
     payload["runtime_root_exists"] = runtime_root.exists()
     return payload

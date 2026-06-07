@@ -55,7 +55,7 @@ def get_moss_tts_output_filename() -> str:
 
 
 def get_tts_engine() -> str:
-    return os.getenv("TTS_ENGINE", "moss").strip().lower() or "moss"
+    return os.getenv("TTS_ENGINE", "cosyvoice").strip().lower() or "cosyvoice"
 
 
 def get_cosyvoice_model_dir() -> Path:

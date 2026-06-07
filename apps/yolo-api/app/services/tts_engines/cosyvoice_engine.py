@@ -90,6 +90,7 @@ class CosyVoiceEngine:
         output_path: str,
         reference_audio_path: str | None = None,
         prompt_text: str | None = None,
+        speaker_id: str | None = None,
     ) -> TTSResult:
         clean_text = (text or "").strip()
         if not clean_text:
@@ -124,13 +125,21 @@ class CosyVoiceEngine:
             segment_outputs: list[Path] = []
             for index, chunk in enumerate(chunks, 1):
                 segment_path = temp_root / f"segment_{index:03d}.wav"
-                self._synthesize_chunk(
-                    model=model,
-                    text=chunk,
-                    output_path=segment_path,
-                    reference_wav=reference_wav,
-                    prompt_text=resolved_prompt_text,
-                )
+                if reference_wav is not None:
+                    self._synthesize_zero_shot_chunk(
+                        model=model,
+                        text=chunk,
+                        output_path=segment_path,
+                        reference_wav=reference_wav,
+                        prompt_text=resolved_prompt_text,
+                    )
+                else:
+                    self._synthesize_preset_chunk(
+                        model=model,
+                        text=chunk,
+                        output_path=segment_path,
+                        speaker_id=speaker_id,
+                    )
                 segment_outputs.append(segment_path)
 
             if len(segment_outputs) == 1:
@@ -269,7 +278,7 @@ class CosyVoiceEngine:
             )
         return self._model
 
-    def _synthesize_chunk(
+    def _synthesize_zero_shot_chunk(
         self,
         *,
         model: Any,
@@ -312,6 +321,75 @@ class CosyVoiceEngine:
                 data={"errorType": "cosyvoice_synthesis_failed"},
                 status_code=500,
             ) from exc
+
+    def _synthesize_preset_chunk(
+        self,
+        *,
+        model: Any,
+        text: str,
+        output_path: Path,
+        speaker_id: str | None,
+    ) -> None:
+        if not hasattr(model, "inference_sft"):
+            raise AppException(
+                error_code.INTERNAL_ERROR,
+                "当前 CosyVoice 模型未提供内置音色，请创建自定义音色或设置 TTS_ENGINE=moss。",
+                data={"errorType": "cosyvoice_builtin_voice_not_supported", "modelDir": str(self.model_dir)},
+                status_code=500,
+            )
+        resolved_speaker = self._resolve_speaker_id(model, speaker_id)
+        try:
+            generated_any = False
+            for index, result in enumerate(model.inference_sft(text, resolved_speaker, stream=False), 1):
+                speech = result.get("tts_speech") if isinstance(result, dict) else None
+                if speech is None:
+                    continue
+                self._torchaudio.save(str(output_path), speech, int(getattr(model, "sample_rate", self.sample_rate)))
+                generated_any = True
+                if index >= 1:
+                    break
+            if not generated_any or not output_path.exists():
+                raise RuntimeError("CosyVoice preset 没有返回有效音频")
+        except AppException:
+            raise
+        except Exception as exc:
+            raise AppException(
+                error_code.INTERNAL_ERROR,
+                "CosyVoice 内置音色生成失败。",
+                data={
+                    "errorType": "cosyvoice_builtin_synthesis_failed",
+                    "speakerId": resolved_speaker,
+                },
+                status_code=500,
+            ) from exc
+
+    def _resolve_speaker_id(self, model: Any, speaker_id: str | None) -> str:
+        configured = (speaker_id or "").strip()
+        speakers: list[str] = []
+        if hasattr(model, "list_avaliable_spks"):
+            try:
+                speakers = list(model.list_avaliable_spks() or [])
+            except Exception:
+                speakers = []
+        elif hasattr(model, "list_available_spks"):
+            try:
+                speakers = list(model.list_available_spks() or [])
+            except Exception:
+                speakers = []
+        if configured and (not speakers or configured in speakers):
+            return configured
+        if speakers:
+            return speakers[0]
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "当前 CosyVoice 模型没有可用内置音色，请创建自定义音色或设置 TTS_ENGINE=moss。",
+            data={
+                "errorType": "cosyvoice_builtin_voice_not_supported",
+                "requestedSpeakerId": configured,
+                "modelDir": str(self.model_dir),
+            },
+            status_code=500,
+        )
 
     def _validate_reference_audio(self, audio_path: Path) -> None:
         metadata = probe_audio(audio_path)
