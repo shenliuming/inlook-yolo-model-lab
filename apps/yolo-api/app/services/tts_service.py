@@ -12,6 +12,8 @@ from typing import Any
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 
 from app.clients.moss_tts_client import moss_tts_client
+from app.common import error_code
+from app.common.exceptions import AppException
 from app.config.paths import CONTENT_LAB_TTS_RUNTIME_DIR
 from app.config.settings import (
     get_tts_engine,
@@ -144,12 +146,13 @@ def create_status_payload(task_id: str, payload: dict[str, Any]) -> None:
 
 def get_tts_health() -> dict[str, Any]:
     runtime_root = RUNTIME_ROOT
-    payload = moss_tts_client.health()
-    payload["configured_engine"] = get_tts_engine()
-    payload["cosyvoice"] = cosyvoice_engine.health()
-    payload["runtime_root"] = str(runtime_root)
-    payload["runtime_root_exists"] = runtime_root.exists()
-    return payload
+    return {
+        "configured_engine": get_tts_engine(),
+        "cosyvoice": cosyvoice_engine.health(),
+        "moss": moss_tts_client.health(),
+        "runtime_root": str(runtime_root),
+        "runtime_root_exists": runtime_root.exists(),
+    }
 
 
 def choose_builtin_voice(language: str) -> str:
@@ -367,6 +370,136 @@ def process_tts_task(
         write_task(task_id, task)
 
 
+def process_cosyvoice_tts_task(
+    task_id: str,
+    *,
+    text_path: Path,
+    voice_mode: str,
+    language: str,
+    execution_provider: str,
+    prompt_audio_path: Path | None,
+    builtin_voice: str | None,
+) -> None:
+    task = read_json(task_json_path(task_id))
+    final_output_path = task_outputs_dir(task_id) / "voice.wav"
+    try:
+        task.update({"status": "running", "message": "正在使用 CosyVoice 生成语音"})
+        write_task(task_id, task)
+        append_log(task_id, f"[INFO] engine=cosyvoice voiceMode={voice_mode} executionProvider={execution_provider}")
+
+        text = text_path.read_text(encoding="utf-8", errors="ignore").strip()
+        request_payload = {
+            "taskId": task_id,
+            "engine": "cosyvoice",
+            "voiceMode": voice_mode,
+            "language": language,
+            "builtinVoice": builtin_voice,
+            "promptAudioPath": str(prompt_audio_path) if prompt_audio_path else "",
+            "textLength": len(text),
+            "createdAt": now(),
+        }
+        write_json(task_outputs_dir(task_id) / "tts_request.json", request_payload)
+
+        result = cosyvoice_engine.synthesize(
+            text=text,
+            output_path=str(final_output_path),
+            reference_audio_path=str(prompt_audio_path) if prompt_audio_path else None,
+            prompt_text=None,
+            speaker_id=builtin_voice,
+        )
+
+        if not final_output_path.exists():
+            raise RuntimeError("CosyVoice 已执行，但未找到输出音频")
+        append_log(task_id, f"[INFO] output_path={final_output_path}")
+        logger.info("studio cosyvoice synthesis output taskId=%s outputPath=%s", task_id, final_output_path)
+
+        metadata = {
+            "task_id": task_id,
+            "engine": "cosyvoice",
+            "language": language,
+            "voice_mode": voice_mode,
+            "speaker_id": builtin_voice,
+            "prompt_audio_used": str(prompt_audio_path) if prompt_audio_path else None,
+            "text_path": str(text_path),
+            "output_path": str(final_output_path),
+            "result": result.to_dict(),
+            "created_at": now(),
+        }
+        write_json(task_metadata_path(task_id), metadata)
+        create_status_payload(
+            task_id,
+            {
+                "ok": True,
+                "stage": "done",
+                "message": "CosyVoice 生成完成",
+                "output_path": str(final_output_path),
+                "created_at": now(),
+            },
+        )
+
+        task.update(
+            {
+                "status": "success",
+                "message": "CosyVoice 生成完成",
+                "downloads": build_downloads(task_id),
+                "audio_url": download_url(task_id, "voice.wav"),
+            }
+        )
+        append_log(task_id, "[DONE] CosyVoice 生成完成")
+    except Exception as exc:
+        create_status_payload(
+            task_id,
+            {
+                "ok": False,
+                "stage": "failed",
+                "message": str(exc),
+                "created_at": now(),
+            },
+        )
+        task.update(
+            {
+                "status": "failed",
+                "message": f"CosyVoice 生成失败：{exc}",
+                "downloads": build_downloads(task_id),
+            }
+        )
+        append_log(task_id, f"[ERROR] {exc}")
+    finally:
+        write_task(task_id, task)
+
+
+def normalize_tts_engine(engine: str) -> str:
+    value = (engine or get_tts_engine()).strip().lower()
+    if value in {"cosyvoice", "cosyvoice2", "cosyvoice2-0.5b"}:
+        return "cosyvoice"
+    if value in {"moss", "moss-tts-nano", "moss_tts_nano"}:
+        return "moss"
+    raise AppException(
+        error_code.BAD_REQUEST,
+        "不支持的 TTS 引擎配置。",
+        data={"errorType": "unsupported_tts_engine", "engine": value},
+        status_code=400,
+    )
+
+
+def ensure_cosyvoice_available() -> None:
+    health = cosyvoice_engine.health()
+    if not health.get("installed"):
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "CosyVoice 未安装，请先安装 CosyVoice 及其依赖。",
+            data={"errorType": "cosyvoice_not_installed"},
+            status_code=500,
+        )
+    if not health.get("modelExists"):
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "CosyVoice 模型目录不存在，请先下载 CosyVoice2-0.5B。",
+            data={"errorType": "cosyvoice_model_missing", "modelDir": health.get("modelDir")},
+            status_code=500,
+        )
+
+
 def create_tts_task(
     *,
     background_tasks: BackgroundTasks,
@@ -381,6 +514,10 @@ def create_tts_task(
     text_file: UploadFile | None,
     builtin_voice: str | None = None,
 ) -> dict[str, Any]:
+    normalized_engine = normalize_tts_engine(engine)
+    if normalized_engine == "cosyvoice":
+        ensure_cosyvoice_available()
+
     task_id = build_task_id()
     inputs = task_inputs_dir(task_id)
     outputs = task_outputs_dir(task_id)
@@ -414,8 +551,8 @@ def create_tts_task(
         text_preview=resolved_text,
         voice_mode=voice_mode,
         language=language,
-        engine=engine,
-        backend=backend,
+        engine=normalized_engine,
+        backend="cosyvoice2" if normalized_engine == "cosyvoice" else backend,
         execution_provider=execution_provider,
         prompt_audio_name=prompt_audio_name or (Path(prompt_audio_path).name if prompt_audio_path else None),
         builtin_voice=builtin_voice,
@@ -432,17 +569,29 @@ def create_tts_task(
     )
     append_log(task_id, "[INFO] TTS 任务已创建")
 
-    background_tasks.add_task(
-        process_tts_task,
-        task_id,
-        text_path=text_path,
-        voice_mode=voice_mode,
-        language=language,
-        backend=backend or "onnx",
-        execution_provider=execution_provider or get_moss_tts_execution_provider(),
-        prompt_audio_path=normalized_prompt_audio_path,
-        builtin_voice=builtin_voice,
-    )
+    if normalized_engine == "cosyvoice":
+        background_tasks.add_task(
+            process_cosyvoice_tts_task,
+            task_id,
+            text_path=text_path,
+            voice_mode=voice_mode,
+            language=language,
+            execution_provider=execution_provider or "auto",
+            prompt_audio_path=normalized_prompt_audio_path,
+            builtin_voice=builtin_voice,
+        )
+    else:
+        background_tasks.add_task(
+            process_tts_task,
+            task_id,
+            text_path=text_path,
+            voice_mode=voice_mode,
+            language=language,
+            backend=backend or "onnx",
+            execution_provider=execution_provider or get_moss_tts_execution_provider(),
+            prompt_audio_path=normalized_prompt_audio_path,
+            builtin_voice=builtin_voice,
+        )
     return read_task(task_id)
 
 

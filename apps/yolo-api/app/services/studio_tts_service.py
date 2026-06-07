@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 
 from app.config.paths import STUDIO_TTS_TRAINING_RUNTIME_DIR
+from app.config.settings import get_tts_engine
 from app.services.tts_service import create_tts_task, get_tts_task
 from app.services.voice_profile_service import list_voice_profiles, resolve_voice_for_synthesis
 from app.utils.file_utils import safe_filename
@@ -233,7 +234,7 @@ def create_tts_synthesis(
         text=text,
         voice_mode=resolved_voice_mode,
         language=language,
-        engine="moss-tts-nano",
+        engine=get_tts_engine(),
         backend="onnx",
         execution_provider=execution_provider,
         prompt_audio=None,
