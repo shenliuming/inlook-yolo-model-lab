@@ -315,8 +315,18 @@ const setProjectMaterial = (nextMaterial) => {
 
 const setProjectOriginalText = (text, source) => {
   const nextText = String(text || '')
+  const nextSource = source || (nextText.trim() ? 'manual' : 'empty')
+  const sourceChanged =
+    nextText !== currentProject.value.originalText || nextSource !== currentProject.value.originalTextSource
+  if (sourceChanged) {
+    rewriteResults.value = []
+    activeResultId.value = ''
+    rewriteFailed.value = false
+    currentProject.value.rewriteVersions = []
+    currentProject.value.selectedRewriteVersionId = null
+  }
   rawScript.value = nextText
-  originalTextSource.value = source || (nextText.trim() ? 'manual' : 'empty')
+  originalTextSource.value = nextSource
   currentProject.value.originalText = nextText
   currentProject.value.originalTextSource = originalTextSource.value
 }
@@ -331,6 +341,7 @@ const clearProjectCurrentScript = () => {
   currentProject.value.currentScript = ''
   currentProject.value.currentScriptSource = ''
   currentProject.value.currentScriptTitle = ''
+  currentProject.value.selectedRewriteVersionId = null
   currentProject.value.currentAudio = null
   currentProject.value.digitalHumanVideo = null
   voiceStatus.value = '待生成'
@@ -347,6 +358,7 @@ const setProjectCurrentScript = ({ text, source, title, activeResult = '' }) => 
   currentProject.value.currentScript = nextText
   currentProject.value.currentScriptSource = currentScriptSource.value
   currentProject.value.currentScriptTitle = currentScriptTitle.value
+  currentProject.value.selectedRewriteVersionId = source === 'rewrite_version' ? activeResult || null : null
   currentProject.value.currentAudio = null
   currentProject.value.digitalHumanVideo = null
   voiceStatus.value = `已选择 ${currentScriptTitle.value}`
@@ -894,6 +906,7 @@ const handleFileSelected = async (file) => {
   currentNormalizedUrl.value = ''
   lastInputRaw.value = file.name
   readStatus.value = `正在上传 ${file.name}...`
+  currentProject.value.materialMode = 'video_pending'
   material.value = null
   materialId.value = ''
   setProjectMaterial(null)
@@ -982,6 +995,7 @@ const readMaterial = async ({ rawInput, extractedLinks, primaryLink, requestSeqS
   pendingUrls.value = extractedLinks.slice(1).map((item) => item.normalizedUrl)
   videoLink.value = primaryLink.normalizedUrl
   currentNormalizedUrl.value = primaryLink.normalizedUrl
+  currentProject.value.materialMode = 'video_pending'
   const detectedSourceType = primaryLink.sourceType
   if (detectedSourceType === 'unknown') {
     readStatus.value = '当前平台可能暂不稳定'
@@ -1215,6 +1229,8 @@ const runRewrite = async (options = {}) => {
     })
     const results = Array.isArray(payload?.results) ? payload.results : []
     rewriteResults.value = results.filter((item) => item?.content)
+    currentProject.value.rewriteVersions = rewriteResults.value
+    currentProject.value.selectedRewriteVersionId = null
     activeResultId.value = rewriteResults.value[0]?.id || ''
     rewriteFailed.value = false
     if (!rewriteResults.value.length) {
