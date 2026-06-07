@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import threading
 import uuid
@@ -26,6 +27,7 @@ MAX_PROMPT_AUDIO_MB = 20
 MAX_PROMPT_AUDIO_BYTES = MAX_PROMPT_AUDIO_MB * 1024 * 1024
 MAX_TEXT_FILE_BYTES = 512 * 1024
 _task_lock = threading.Lock()
+logger = logging.getLogger("inlook.yolo_api")
 
 DEFAULT_VOICE_BY_LANGUAGE = {
     "zh": "Junhao",
@@ -241,6 +243,7 @@ def create_task_payload(
     backend: str,
     execution_provider: str,
     prompt_audio_name: str | None,
+    builtin_voice: str | None,
 ) -> dict[str, Any]:
     return {
         "task_id": task_id,
@@ -254,6 +257,7 @@ def create_task_payload(
         "engine": engine,
         "backend": backend,
         "execution_provider": execution_provider,
+        "builtin_voice": builtin_voice,
         "prompt_audio_name": prompt_audio_name,
         "downloads": {},
     }
@@ -268,6 +272,7 @@ def process_tts_task(
     backend: str,
     execution_provider: str,
     prompt_audio_path: Path | None,
+    builtin_voice: str | None,
 ) -> None:
     task = read_json(task_json_path(task_id))
     output_path = task_outputs_dir(task_id) / get_moss_tts_output_filename()
@@ -277,7 +282,7 @@ def process_tts_task(
         write_task(task_id, task)
         append_log(task_id, f"[INFO] engine=moss-tts-nano backend={backend} executionProvider={execution_provider}")
 
-        voice = choose_builtin_voice(language)
+        voice = (builtin_voice or "").strip() or choose_builtin_voice(language)
         if voice_mode == "clone" and prompt_audio_path is None:
             raise RuntimeError("克隆模式需要上传参考音频，或填写 promptAudioPath")
 
@@ -296,6 +301,8 @@ def process_tts_task(
 
         if output_path != final_output_path:
             shutil.move(str(output_path), str(final_output_path))
+        append_log(task_id, f"[INFO] output_path={final_output_path}")
+        logger.info("studio tts synthesis output taskId=%s outputPath=%s", task_id, final_output_path)
 
         metadata = {
             "task_id": task_id,
@@ -366,6 +373,7 @@ def create_tts_task(
     prompt_audio: UploadFile | None,
     prompt_audio_path: str,
     text_file: UploadFile | None,
+    builtin_voice: str | None = None,
 ) -> dict[str, Any]:
     task_id = build_task_id()
     inputs = task_inputs_dir(task_id)
@@ -404,6 +412,7 @@ def create_tts_task(
         backend=backend,
         execution_provider=execution_provider,
         prompt_audio_name=prompt_audio_name or (Path(prompt_audio_path).name if prompt_audio_path else None),
+        builtin_voice=builtin_voice,
     )
     write_task(task_id, task)
     create_status_payload(
@@ -426,6 +435,7 @@ def create_tts_task(
         backend=backend or "onnx",
         execution_provider=execution_provider or get_moss_tts_execution_provider(),
         prompt_audio_path=normalized_prompt_audio_path,
+        builtin_voice=builtin_voice,
     )
     return read_task(task_id)
 

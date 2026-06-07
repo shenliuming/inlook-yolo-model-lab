@@ -36,6 +36,10 @@ async def create_synthesis(request: TtsSynthesisCreateRequestDTO, background_tas
         create_tts_synthesis(
             background_tasks=background_tasks,
             text=request.text,
+            voice_id=request.voiceId or request.voice,
+            speed=request.speed,
+            emotion=request.emotion,
+            volume=request.volume,
             language=request.language,
             training_id=request.trainingId,
             voice_mode=request.voiceMode,

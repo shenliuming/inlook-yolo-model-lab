@@ -56,6 +56,14 @@ const props = defineProps({
     type: String,
     default: '手动输入',
   },
+  isManualTextMode: {
+    type: Boolean,
+    default: false,
+  },
+  canSetAsCurrentScript: {
+    type: Boolean,
+    default: false,
+  },
   inputDirty: {
     type: Boolean,
     default: false,
@@ -67,6 +75,7 @@ const emit = defineEmits([
   'update:rawScript',
   'file-selected',
   'manual-input',
+  'set-current-script',
   'extract-script',
   'start-auth',
   'clear-auth',
@@ -207,7 +216,11 @@ const copyText = async (text, hint = '已复制文案') => {
       </div>
 
       <p v-if="uploadedFileName" class="helper-text">已选择文件：{{ uploadedFileName }}</p>
-      <div v-if="!material" class="material-lamp-row">
+      <div v-if="isManualTextMode" class="material-lamp-row">
+        <span class="status-dot status-dot--idle"></span>
+        <strong>当前模式：手动文案</strong>
+      </div>
+      <div v-if="!material && !isManualTextMode" class="material-lamp-row">
         <span class="status-dot" :class="`status-dot--${materialLamp}`"></span>
         <strong>{{ materialLampText }}</strong>
       </div>
@@ -234,12 +247,21 @@ const copyText = async (text, hint = '已复制文案') => {
         <textarea
           :value="rawScript"
           class="text-area text-area--tall"
-          placeholder="提取完成后，这里会回填视频口播文案。你也可以直接编辑。"
+          :placeholder="isManualTextMode ? '直接输入你的口播文案，后续可以改写、配音或生成字幕。' : '提取完成后，这里会回填视频口播文案。你也可以直接编辑。'"
           @input="emit('update:rawScript', $event.target.value)"
         ></textarea>
         <div class="button-row button-row--compact">
           <button class="secondary-button secondary-button--small" type="button" :disabled="!rawScript.trim()" @click="copyText(rawScript, '已复制文案')">
             复制文案
+          </button>
+          <button
+            v-if="canSetAsCurrentScript"
+            class="primary-button primary-button--small"
+            type="button"
+            :disabled="!canSetAsCurrentScript"
+            @click="emit('set-current-script')"
+          >
+            设为成片文案
           </button>
         </div>
         <p v-if="copyHint" class="helper-text helper-text--success">{{ copyHint }}</p>

@@ -12,6 +12,7 @@ from app.config.settings import get_yolo_config_dir
 from app.controllers.ai_controller import router as ai_router
 from app.controllers.content_lab_controller import router as content_lab_router
 from app.controllers.browser_auth_controller import router as browser_auth_router
+from app.controllers.digital_human_controller import router as digital_human_router
 from app.controllers.file_controller import router as file_router
 from app.controllers.health_controller import router as health_router
 from app.controllers.material_controller import router as material_router
@@ -20,6 +21,7 @@ from app.controllers.subtitle_controller import router as subtitle_router
 from app.controllers.task_controller import router as task_router
 from app.controllers.tts_controller import router as tts_router
 from app.controllers.transcription_controller import router as transcription_router
+from app.controllers.voice_controller import router as voice_router
 from app.controllers.vision_controller import router as vision_router
 
 setup_logging()
@@ -43,5 +45,7 @@ app.include_router(material_router)
 app.include_router(transcription_router)
 app.include_router(subtitle_router)
 app.include_router(studio_tts_router)
+app.include_router(voice_router)
+app.include_router(digital_human_router)
 app.include_router(task_router)
 app.include_router(file_router)

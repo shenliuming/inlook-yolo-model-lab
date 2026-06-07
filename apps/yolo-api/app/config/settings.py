@@ -54,6 +54,30 @@ def get_moss_tts_output_filename() -> str:
     return os.getenv("MOSS_TTS_OUTPUT_FILENAME", "voice.wav").strip() or "voice.wav"
 
 
+def get_tts_engine() -> str:
+    return os.getenv("TTS_ENGINE", "moss").strip().lower() or "moss"
+
+
+def get_cosyvoice_model_dir() -> Path:
+    configured = os.getenv("COSYVOICE_MODEL_DIR", "pretrained_models/CosyVoice2-0.5B").strip()
+    path = Path(configured or "pretrained_models/CosyVoice2-0.5B").expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (ROOT_DIR / path).resolve()
+
+
+def get_cosyvoice_device() -> str:
+    return os.getenv("COSYVOICE_DEVICE", "auto").strip().lower() or "auto"
+
+
+def get_cosyvoice_sample_rate() -> int:
+    raw = os.getenv("COSYVOICE_SAMPLE_RATE", "24000").strip() or "24000"
+    try:
+        return max(8000, min(48000, int(raw)))
+    except ValueError:
+        return 24000
+
+
 def get_content_lab_runtime_relative_dir() -> Path:
     configured = os.getenv("CONTENT_LAB_RUNTIME_DIR", "runtime/content_lab").strip() or "runtime/content_lab"
     return Path(configured)

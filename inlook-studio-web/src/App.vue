@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import StudioTopbar from './components/StudioTopbar.vue'
 import StudioSidebar from './components/StudioSidebar.vue'
 import MaterialScriptPanel from './components/MaterialScriptPanel.vue'
@@ -12,9 +12,17 @@ import { clearBrowserAuth, getBrowserAuthStatus, startBrowserAuth } from './api/
 import { extractMaterial, uploadMaterial } from './api/materials'
 import { createTranscription } from './api/transcriptions'
 import { listTasks } from './api/tasks'
-import { createSynthesis, createTraining, getSynthesis, getTraining } from './api/tts'
+import {
+  createSynthesis,
+  createVoiceFromMaterial,
+  createVoicePreview,
+  createVoiceProfile,
+  getSynthesis,
+  listVoiceProfiles,
+} from './api/tts'
 import { getAiStatus, rewriteCopy } from './api/ai'
 import { apiUrl } from './api/client'
+import { generateDigitalHumanVideo } from './api/digitalHuman'
 import {
   aspectOptions,
   avatarOptions,
@@ -34,6 +42,16 @@ const activeNav = ref('home')
 const serviceStatus = ref('运行中')
 const modelStatus = ref('已连接')
 const outputPath = ref('D:/Inlook_Outputs')
+
+const defaultVoiceProfiles = voiceOptions.map((name, index) => {
+  const ids = ['male_magnetic', 'female_warm', 'teacher_knowledge', 'normal_speaker']
+  return {
+    voiceId: ids[index] || name,
+    name,
+    type: 'builtin',
+    status: 'ready',
+  }
+})
 
 const videoLink = ref('')
 const uploadedFile = ref(null)
@@ -59,6 +77,9 @@ const rewriteResults = ref([])
 const activeResultId = ref('')
 const isRewriting = ref(false)
 const rewriteFailed = ref(false)
+const currentScript = ref('')
+const currentScriptSource = ref('empty')
+const currentScriptTitle = ref('')
 const aiStatus = ref({
   available: false,
   provider: null,
@@ -66,21 +87,28 @@ const aiStatus = ref({
   message: 'AI 改写服务未配置，请先配置模型服务。',
 })
 
-const selectedVoice = ref(voiceOptions[0])
+const voices = ref(defaultVoiceProfiles)
+const selectedVoiceId = ref(defaultVoiceProfiles[0]?.voiceId || 'male_magnetic')
 const selectedEmotion = ref(emotionOptions[0])
 const voiceSpeed = ref(1.0)
 const voiceVolume = ref(82)
 const previewingVoice = ref(false)
 const voiceGenerating = ref(false)
+const humanGenerating = ref(false)
+const creatingVoiceFromMaterial = ref(false)
 const voiceStatus = ref('待生成')
 const humanStatus = ref('数字人待接入')
 const trainingStatus = ref('未创建音色')
-const trainingId = ref('')
-const trainingReady = ref(false)
-const referenceAudioFile = ref(null)
-const referenceAudioName = ref('')
+const voiceCreateDialogVisible = ref(false)
+const voiceCreateLoading = ref(false)
+const voiceCreateName = ref('我的音色')
+const voiceCreateAudioFile = ref(null)
+const voiceCreateAudioName = ref('')
+const voiceCreateConsent = ref(false)
+const voiceCreateError = ref('')
 const synthesisId = ref('')
 const synthesisAudioUrl = ref('')
+const voicePreviewAudioUrl = ref('')
 const selectedAvatarId = ref(avatarOptions[0].id)
 const selectedScene = ref(sceneOptions[0])
 const selectedBackground = ref(backgroundOptions[0])
@@ -107,6 +135,33 @@ const authStatuses = ref({
   bilibili: { platform: 'bilibili', status: 'unauthorized', message: '未授权' },
 })
 const originalTextSource = ref('empty')
+const createEmptyProject = () => ({
+  projectId: null,
+  material: null,
+  materialMode: 'empty',
+  originalText: '',
+  originalTextSource: 'empty',
+  rewriteVersions: [],
+  selectedRewriteVersionId: null,
+  currentScript: '',
+  currentScriptSource: '',
+  currentScriptTitle: '',
+  selectedVoiceId: selectedVoiceId.value,
+  selectedVoiceType: '',
+  selectedAvatarId: selectedAvatarId.value,
+  selectedAvatarName: avatarOptions.find((item) => item.id === selectedAvatarId.value)?.name || '',
+  currentAudio: null,
+  digitalHumanVideo: null,
+  subtitles: null,
+  bgm: {
+    name: selectedBgm.value,
+    narrationVolume: narrationVolume.value,
+    bgmVolume: bgmVolume.value,
+  },
+  exportResult: null,
+  previewVideo: null,
+})
+const currentProject = ref(createEmptyProject())
 
 const renderingMeta = ref({
   sourceDuration: '--:--',
@@ -127,37 +182,47 @@ const selectedAvatar = computed(() =>
 )
 
 const scriptSourceLabel = computed(() => {
-  if (originalTextSource.value === 'video_transcript') return '视频口播'
-  if (originalTextSource.value === 'platform_description') return '平台文案'
-  if (originalTextSource.value === 'manual') return '手动文案'
+  const source = currentProject.value.originalTextSource || originalTextSource.value
+  if (source === 'video_transcript') return '视频口播'
+  if (source === 'platform_description') return '平台文案'
+  if (source === 'manual') return '手动文案'
   return '空'
 })
 
 const rewriteSourceUsageText = computed(() => {
-  if (originalTextSource.value === 'video_transcript') return '当前使用：视频口播'
-  if (originalTextSource.value === 'manual') return '当前使用：手动文案'
-  if (originalTextSource.value === 'platform_description') return '当前只有平台文案，建议先提取口播。'
+  const source = currentProject.value.originalTextSource || originalTextSource.value
+  if (source === 'video_transcript') return '当前使用：视频口播'
+  if (source === 'manual') return '当前使用：手动文案'
+  if (source === 'platform_description') return '当前只有平台文案，建议先提取口播。'
   return '请先提取或输入文案'
 })
 
 const sourceTextReadyForRewrite = computed(
   () =>
-    Boolean(rawScript.value.trim()) &&
-    (originalTextSource.value === 'video_transcript' || originalTextSource.value === 'manual'),
+    Boolean(currentProject.value.originalText.trim()) &&
+    (currentProject.value.originalTextSource === 'video_transcript' || currentProject.value.originalTextSource === 'manual'),
+)
+
+const isManualTextMode = computed(() => currentProject.value.originalTextSource === 'manual' && !currentProject.value.material)
+
+const canSetTextResultAsCurrent = computed(
+  () =>
+    Boolean(currentProject.value.originalText.trim()) &&
+    (currentProject.value.originalTextSource === 'video_transcript' || currentProject.value.originalTextSource === 'manual'),
 )
 
 const canRewrite = computed(() => aiRewriteAvailable.value && sourceTextReadyForRewrite.value)
 
 const canUsePlatformTextForRewrite = computed(
-  () => aiRewriteAvailable.value && originalTextSource.value === 'platform_description' && Boolean(rawScript.value.trim()),
+  () => aiRewriteAvailable.value && currentProject.value.originalTextSource === 'platform_description' && Boolean(currentProject.value.originalText.trim()),
 )
 
 const rewriteUnavailableMessage = computed(() => {
   if (!aiRewriteAvailable.value) return aiUnavailableMessage.value
-  if (originalTextSource.value === 'platform_description') {
+  if (currentProject.value.originalTextSource === 'platform_description') {
     return '当前只有平台文案，请先提取视频口播，或手动确认后再改写。'
   }
-  if (!rawScript.value.trim() || originalTextSource.value === 'empty') return '请先提取视频口播，或手动输入文案。'
+  if (!currentProject.value.originalText.trim() || currentProject.value.originalTextSource === 'empty') return '请先提取视频口播，或手动输入文案。'
   return ''
 })
 
@@ -197,6 +262,180 @@ const isInputDirty = computed(() => {
 })
 
 const currentMaterialLocalReady = computed(() => materialLocalReady.value && !isInputDirty.value)
+
+const selectedVoice = computed(() => voices.value.find((voice) => voice.voiceId === selectedVoiceId.value) || null)
+
+const projectStepStatus = computed(() => ({
+  materialReady: Boolean(
+    currentProject.value.materialMode === 'video' &&
+      currentProject.value.material?.localVideoUrl &&
+      currentMaterialLocalReady.value,
+  ),
+  scriptReady: Boolean(currentProject.value.currentScript?.trim()),
+  audioReady: Boolean(currentProject.value.currentAudio?.audioUrl),
+  subtitleReady: Boolean(currentProject.value.subtitles || subtitleDownloads.value.srt || subtitleDownloads.value.vtt),
+  avatarReady: Boolean(selectedAvatarId.value),
+  exportReady: Boolean(currentProject.value.currentAudio?.audioUrl),
+}))
+
+const canGenerateAvatarVideo = computed(
+  () =>
+    Boolean(currentProject.value.currentScript?.trim()) &&
+    Boolean(currentProject.value.currentAudio?.audioUrl) &&
+    Boolean(selectedAvatarId.value),
+)
+
+const humanGenerateHint = computed(() => {
+  if (!currentProject.value.currentScript?.trim()) return '请先输入或选择一版成片文案。'
+  if (!currentProject.value.currentAudio?.audioUrl) return '请先生成配音。'
+  if (!selectedAvatarId.value) return '请先选择数字人形象。'
+  return `已准备：${currentProject.value.currentScriptTitle || '当前文案'} · ${selectedAvatar.value?.name || '数字人'}`
+})
+
+const resetCurrentProject = (overrides = {}) => {
+  currentProject.value = {
+    ...createEmptyProject(),
+    selectedVoiceType: selectedVoice.value?.type || '',
+    selectedAvatarName: selectedAvatar.value?.name || '',
+    ...overrides,
+  }
+}
+
+const setProjectMaterial = (nextMaterial) => {
+  currentProject.value.material = nextMaterial || null
+  currentProject.value.materialMode = nextMaterial ? 'video' : 'empty'
+  currentProject.value.previewVideo = nextMaterial?.localVideoUrl
+    ? {
+        type: 'material',
+        url: nextMaterial.localVideoUrl,
+        title: nextMaterial.title || '素材视频',
+      }
+    : null
+}
+
+const setProjectOriginalText = (text, source) => {
+  const nextText = String(text || '')
+  rawScript.value = nextText
+  originalTextSource.value = source || (nextText.trim() ? 'manual' : 'empty')
+  currentProject.value.originalText = nextText
+  currentProject.value.originalTextSource = originalTextSource.value
+}
+
+const clearProjectCurrentScript = () => {
+  currentScript.value = ''
+  currentScriptSource.value = 'empty'
+  currentScriptTitle.value = ''
+  activeResultId.value = ''
+  synthesisAudioUrl.value = ''
+  synthesisId.value = ''
+  currentProject.value.currentScript = ''
+  currentProject.value.currentScriptSource = ''
+  currentProject.value.currentScriptTitle = ''
+  currentProject.value.currentAudio = null
+  currentProject.value.digitalHumanVideo = null
+  voiceStatus.value = '待生成'
+}
+
+const setProjectCurrentScript = ({ text, source, title, activeResult = '' }) => {
+  const nextText = String(text || '').trim()
+  currentScript.value = nextText
+  currentScriptSource.value = source || 'empty'
+  currentScriptTitle.value = title || '当前文案'
+  activeResultId.value = activeResult
+  synthesisAudioUrl.value = ''
+  synthesisId.value = ''
+  currentProject.value.currentScript = nextText
+  currentProject.value.currentScriptSource = currentScriptSource.value
+  currentProject.value.currentScriptTitle = currentScriptTitle.value
+  currentProject.value.currentAudio = null
+  currentProject.value.digitalHumanVideo = null
+  voiceStatus.value = `已选择 ${currentScriptTitle.value}`
+}
+
+const setProjectCurrentAudio = (audioResult) => {
+  const rawAudioUrl = String(audioResult?.audioUrl || '')
+  const audioUrl = rawAudioUrl
+    ? rawAudioUrl.startsWith('http://') || rawAudioUrl.startsWith('https://')
+      ? rawAudioUrl
+      : apiUrl(rawAudioUrl)
+    : ''
+  currentProject.value.currentAudio = audioUrl
+    ? {
+        audioId: audioResult?.audioId || audioResult?.synthesisId || synthesisId.value,
+        synthesisId: audioResult?.synthesisId || synthesisId.value,
+        audioUrl,
+        duration: audioResult?.duration || audioResult?.durationSeconds || null,
+        voiceId: selectedVoiceId.value,
+        voiceType: selectedVoice.value?.type || '',
+        sourceScriptTitle: currentScriptTitle.value,
+        status: audioResult?.status || 'success',
+      }
+    : null
+}
+
+watch(
+  () => [selectedVoiceId.value, selectedVoice.value?.type || ''],
+  ([voiceId, voiceType], [previousVoiceId] = []) => {
+    currentProject.value.selectedVoiceId = voiceId
+    currentProject.value.selectedVoiceType = voiceType
+    if (previousVoiceId && previousVoiceId !== voiceId && currentProject.value.currentAudio) {
+      currentProject.value.currentAudio = null
+      currentProject.value.digitalHumanVideo = null
+      synthesisAudioUrl.value = ''
+      synthesisId.value = ''
+      voiceStatus.value = '音色已切换，请重新生成配音'
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [selectedBgm.value, narrationVolume.value, bgmVolume.value],
+  ([name, narration, bgmLevel]) => {
+    currentProject.value.bgm = {
+      name,
+      narrationVolume: narration,
+      bgmVolume: bgmLevel,
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [selectedAvatarId.value, selectedAvatar.value?.name || ''],
+  ([avatarId, avatarName]) => {
+    currentProject.value.selectedAvatarId = avatarId
+    currentProject.value.selectedAvatarName = avatarName
+  },
+  { immediate: true },
+)
+
+const selectedVoiceReferenceAudioUrl = computed(() => {
+  const voice = selectedVoice.value
+  if (voice?.type !== 'custom' || !voice.referenceAudioUrl) return ''
+  return apiUrl(voice.referenceAudioUrl)
+})
+
+const selectedVoiceQualityWarnings = computed(() => selectedVoice.value?.quality?.warnings || [])
+
+const currentMaterialVoice = computed(() => {
+  const currentMaterialId = materialId.value
+  if (!currentMaterialId) return null
+  return (
+    voices.value.find(
+      (voice) =>
+        voice.type === 'custom' &&
+        (voice.source === 'current_video' || voice.source === 'material') &&
+        (voice.materialId === currentMaterialId || voice.materialKey === material.value?.materialKey),
+    ) || null
+  )
+})
+
+const currentMaterialVoiceIsClean = computed(
+  () => currentMaterialVoice.value?.referenceExtraction?.version === 'clean_segment_v1',
+)
+
+const hasCurrentMaterialVoice = computed(() => Boolean(currentMaterialVoice.value && currentMaterialVoiceIsClean.value))
 
 const materialLamp = computed(() => {
   if (isReading.value) return 'processing'
@@ -302,9 +541,11 @@ const isCurrentRequest = (requestSeqSnapshot) => requestSeqSnapshot === requestS
 const resetMaterialForDirtyInput = () => {
   material.value = null
   materialId.value = ''
-  rawScript.value = ''
-  originalTextSource.value = 'empty'
+  setProjectMaterial(null)
+  setProjectOriginalText('', 'empty')
+  clearCurrentScript()
   subtitleDownloads.value = {}
+  currentProject.value.subtitles = null
   transcriptionId.value = ''
   subtitleStatus.value = '未生成字幕'
   previewState.value = 'idle'
@@ -312,6 +553,10 @@ const resetMaterialForDirtyInput = () => {
   currentStep.value = '等待任务'
   readStatus.value = '等待提取当前链接'
   appError.value = ''
+}
+
+const clearCurrentScript = () => {
+  clearProjectCurrentScript()
 }
 
 const handleVideoLinkInput = (value) => {
@@ -334,8 +579,15 @@ const handleVideoLinkInput = (value) => {
 }
 
 const handleRawScriptInput = (value) => {
-  rawScript.value = value
-  originalTextSource.value = value.trim() ? 'manual' : 'empty'
+  const nextText = String(value || '')
+  if (currentScriptSource.value === 'manual' && currentScript.value !== nextText.trim()) {
+    clearCurrentScript()
+    voiceStatus.value = '文案已修改，请重新设为成片文案'
+  }
+  setProjectOriginalText(
+    nextText,
+    nextText.trim() || originalTextSource.value === 'manual' ? 'manual' : 'empty',
+  )
 }
 
 const fetchTasks = async () => {
@@ -516,9 +768,12 @@ const extractVideoLinksFromInput = (rawInput) => {
 const applyMaterial = (payload) => {
   material.value = payload
   materialId.value = payload.materialId
-  rawScript.value = payload.description || payload.caption || payload.title || ''
-  originalTextSource.value = rawScript.value ? 'platform_description' : 'empty'
+  setProjectMaterial(payload)
+  const platformText = payload.description || payload.caption || payload.title || ''
+  setProjectOriginalText(platformText, platformText ? 'platform_description' : 'empty')
+  clearCurrentScript()
   subtitleDownloads.value = {}
+  currentProject.value.subtitles = null
   transcriptionId.value = ''
   subtitleStatus.value = '未生成字幕'
   appError.value = ''
@@ -641,9 +896,11 @@ const handleFileSelected = async (file) => {
   readStatus.value = `正在上传 ${file.name}...`
   material.value = null
   materialId.value = ''
-  rawScript.value = ''
-  originalTextSource.value = 'empty'
+  setProjectMaterial(null)
+  setProjectOriginalText('', 'empty')
+  clearCurrentScript()
   subtitleDownloads.value = {}
+  currentProject.value.subtitles = null
   isReading.value = true
   try {
     const formData = new FormData()
@@ -655,6 +912,7 @@ const handleFileSelected = async (file) => {
     if (!isCurrentRequest(requestSeqSnapshot)) return
     material.value = null
     materialId.value = ''
+    setProjectMaterial(null)
     readStatus.value = normalizeUiErrorMessage(error, '素材上传失败，请稍后重试。')
     setGlobalErrorFromException(error, '素材上传失败，请稍后重试。')
   } finally {
@@ -665,16 +923,55 @@ const handleFileSelected = async (file) => {
 }
 
 const handleManualInput = () => {
-  readStatus.value = '手动输入中'
+  const hasExistingProjectOutput = Boolean(
+    currentProject.value.currentScript?.trim() || currentProject.value.currentAudio?.audioUrl || currentProject.value.material,
+  )
+  if (hasExistingProjectOutput) {
+    const confirmed = window.confirm('开始新的纯文案项目会清理当前素材预览、成片文案和配音结果。是否继续？')
+    if (!confirmed) return
+  }
+  requestSeq.value += 1
+  videoLink.value = ''
+  uploadedFile.value = null
+  uploadedFileName.value = ''
+  currentNormalizedUrl.value = ''
+  lastInputRaw.value = ''
+  pendingUrls.value = []
+  material.value = null
+  materialId.value = ''
+  resetCurrentProject({
+    originalText: '',
+    originalTextSource: 'manual',
+    materialMode: 'manual',
+    selectedVoiceId: selectedVoiceId.value,
+    selectedVoiceType: selectedVoice.value?.type || '',
+  })
+  setProjectOriginalText('', 'manual')
+  currentProject.value.materialMode = 'manual'
+  clearCurrentScript()
+  subtitleDownloads.value = {}
+  transcriptionId.value = ''
+  subtitleStatus.value = '未生成字幕'
+  previewState.value = 'idle'
+  previewTitle.value = '纯文案模式'
+  renderProgress.value = 0
+  currentStep.value = '纯文案模式'
+  renderingMeta.value.sourceDuration = '--:--'
+  renderingMeta.value.voiceDuration = '--:--'
+  renderingMeta.value.finalDuration = '--:--'
+  readStatus.value = '当前模式：手动文案'
+  appError.value = ''
 }
 
 const readMaterial = async ({ rawInput, extractedLinks, primaryLink, requestSeqSnapshot }) => {
   appError.value = ''
   material.value = null
   materialId.value = ''
-  rawScript.value = ''
-  originalTextSource.value = 'empty'
+  setProjectMaterial(null)
+  setProjectOriginalText('', 'empty')
+  clearCurrentScript()
   subtitleDownloads.value = {}
+  currentProject.value.subtitles = null
   transcriptionId.value = ''
   subtitleStatus.value = '读取素材'
   if (!extractedLinks.length) {
@@ -772,11 +1069,15 @@ const extractCurrentMaterialScript = async (targetMaterial, requestSeqSnapshot) 
     const preferredText =
       task.finalText || task.transcript || task.text || task.asrText || ''
     if (preferredText) {
-      rawScript.value = preferredText
-      originalTextSource.value = 'video_transcript'
+      setProjectOriginalText(preferredText, 'video_transcript')
       previewTitle.value = preferredText.slice(0, 24) || '已生成原始文案'
     }
     subtitleDownloads.value = task.subtitleFiles || {}
+    currentProject.value.subtitles = {
+      transcriptionId: task.transcriptionId,
+      files: task.subtitleFiles || {},
+      source: 'transcription',
+    }
     renderingMeta.value.finalDuration = renderingMeta.value.sourceDuration
     readStatus.value = '视频文案提取完成'
     await fetchTasks()
@@ -872,17 +1173,33 @@ const loadAiStatus = async () => {
   }
 }
 
+const loadVoices = async () => {
+  try {
+    const payload = await listVoiceProfiles()
+    const nextVoices = Array.isArray(payload?.voices) ? payload.voices : []
+    voices.value = nextVoices.length ? nextVoices : defaultVoiceProfiles
+    if (!voices.value.some((voice) => voice.voiceId === selectedVoiceId.value)) {
+      selectedVoiceId.value = voices.value[0]?.voiceId || 'male_magnetic'
+    }
+  } catch (error) {
+    voices.value = defaultVoiceProfiles
+    console.error(error)
+  }
+}
+
 const runRewrite = async (options = {}) => {
   if (!aiRewriteAvailable.value) {
     appError.value = aiUnavailableMessage.value
     return
   }
-  if (!rawScript.value.trim()) {
+  const sourceText = currentProject.value.originalText.trim()
+  const sourceTextType = currentProject.value.originalTextSource
+  if (!sourceText) {
     appError.value = '请先提取或输入文案结果。'
     return
   }
   const allowPlatformText = Boolean(options.allowPlatformText)
-  if (!sourceTextReadyForRewrite.value && !(originalTextSource.value === 'platform_description' && allowPlatformText)) {
+  if (!sourceTextReadyForRewrite.value && !(sourceTextType === 'platform_description' && allowPlatformText)) {
     appError.value = rewriteUnavailableMessage.value
     return
   }
@@ -890,8 +1207,8 @@ const runRewrite = async (options = {}) => {
   appError.value = ''
   try {
     const payload = await rewriteCopy({
-      sourceText: rawScript.value,
-      sourceTextType: originalTextSource.value,
+      sourceText,
+      sourceTextType,
       allowPlatformText,
       instruction: promptText.value,
       template: selectedRewriteTemplate.value,
@@ -923,9 +1240,26 @@ const runRewrite = async (options = {}) => {
 const useRewriteResult = (id) => {
   const result = rewriteResults.value.find((item) => item.id === id)
   if (!result?.content) return
-  rawScript.value = result.content
-  originalTextSource.value = 'manual'
-  activeResultId.value = id
+  setProjectCurrentScript({
+    text: result.content,
+    source: 'rewrite_version',
+    title: result.title || `版本 ${id}`,
+    activeResult: id,
+  })
+}
+
+const setTextResultAsCurrentScript = () => {
+  const text = currentProject.value.originalText.trim()
+  const source = currentProject.value.originalTextSource
+  if (!text || !['video_transcript', 'manual'].includes(source)) {
+    appError.value = '请先提取视频口播，或手动输入一段成片文案。'
+    return
+  }
+  setProjectCurrentScript({
+    text,
+    source,
+    title: source === 'video_transcript' ? '视频口播文案' : '手动输入文案',
+  })
 }
 
 const optimizeRewriteResult = (id) => {
@@ -950,65 +1284,127 @@ const rewriteWithPlatformText = async () => {
   await runRewrite({ allowPlatformText: true })
 }
 
-const handleReferenceAudioSelected = (event) => {
+const openVoiceCreateDialog = () => {
+  voiceCreateDialogVisible.value = true
+  voiceCreateError.value = ''
+  if (!voiceCreateName.value.trim()) voiceCreateName.value = '我的音色'
+}
+
+const closeVoiceCreateDialog = () => {
+  if (voiceCreateLoading.value) return
+  voiceCreateDialogVisible.value = false
+  voiceCreateError.value = ''
+}
+
+const handleVoiceCreateAudioSelected = (event) => {
   const [file] = event.target.files || []
   if (!file) return
-  referenceAudioFile.value = file
-  referenceAudioName.value = file.name
-  trainingStatus.value = `已选择 ${file.name}`
+  voiceCreateAudioFile.value = file
+  voiceCreateAudioName.value = file.name
+  voiceCreateError.value = ''
   event.target.value = ''
 }
 
-const startTraining = async () => {
-  if (!referenceAudioFile.value) {
-    appError.value = '请先选择参考音频。'
+const createCustomVoice = async () => {
+  if (!voiceCreateAudioFile.value) {
+    voiceCreateError.value = '请先上传一段自己的清晰人声。'
     return
   }
-  trainingStatus.value = '音色任务创建中'
-  trainingReady.value = false
+  if (!voiceCreateConsent.value) {
+    voiceCreateError.value = '请先确认该声音属于本人或已获得授权。'
+    return
+  }
+  voiceCreateLoading.value = true
+  voiceCreateError.value = ''
+  trainingStatus.value = '音色创建中'
   try {
     const formData = new FormData()
-    formData.append('referenceAudio', referenceAudioFile.value)
-    const task = await createTraining(formData)
-    trainingId.value = task.trainingId
-    trainingStatus.value = task.message || '音色任务已创建'
-    await fetchTasks()
-    trainingPollTimer = window.setInterval(async () => {
-      try {
-        const latest = await getTraining(task.trainingId)
-        trainingStatus.value = latest.message || latest.stage
-        if (latest.status === 'success') {
-          trainingReady.value = true
-          window.clearInterval(trainingPollTimer)
-          trainingPollTimer = null
-        }
-        if (latest.status === 'failed') {
-          window.clearInterval(trainingPollTimer)
-          trainingPollTimer = null
-        }
-      } catch (error) {
-        setGlobalErrorFromException(error, '音色训练状态获取失败，请稍后重试。')
-      }
-    }, 2000)
+    formData.append('name', voiceCreateName.value.trim() || '我的音色')
+    formData.append('audio', voiceCreateAudioFile.value)
+    formData.append('consent', String(voiceCreateConsent.value))
+    const created = await createVoiceProfile(formData)
+    await loadVoices()
+    selectedVoiceId.value = created.voiceId
+    trainingStatus.value = '音色创建成功'
+    voiceCreateDialogVisible.value = false
+    voiceCreateName.value = '我的音色'
+    voiceCreateAudioFile.value = null
+    voiceCreateAudioName.value = ''
+    voiceCreateConsent.value = false
   } catch (error) {
-    trainingStatus.value = normalizeUiErrorMessage(error, '音色训练失败')
-    setGlobalErrorFromException(error, '音色训练失败，请稍后重试。')
+    const message = normalizeUiErrorMessage(error, '音色创建失败，请重新上传清晰人声。')
+    voiceCreateError.value = message
+    trainingStatus.value = message
+    console.error(error)
+  } finally {
+    voiceCreateLoading.value = false
+  }
+}
+
+const createVoiceFromCurrentMaterial = async () => {
+  if (creatingVoiceFromMaterial.value) return
+  if (!currentMaterialLocalReady.value || !materialId.value) {
+    appError.value = '请先读取并准备好视频素材。'
+    return
+  }
+  if (currentMaterialVoice.value && currentMaterialVoiceIsClean.value) {
+    selectedVoiceId.value = currentMaterialVoice.value.voiceId
+    trainingStatus.value = '已选择视频参考音频'
+    return
+  }
+  const confirmed = window.confirm('请确认该视频中的声音属于本人或已获得授权，仅用于合法内容创作。是否继续创建音色？')
+  if (!confirmed) return
+  creatingVoiceFromMaterial.value = true
+  trainingStatus.value = '正在提取当前视频音色'
+  try {
+    const created = await createVoiceFromMaterial({
+      materialId: materialId.value,
+      name: '当前视频音色',
+      consent: true,
+      force: false,
+    })
+    await loadVoices()
+    selectedVoiceId.value = created.voiceId
+    trainingStatus.value = created.reused ? '已选择视频参考音频' : '参考音频已提取，请先试听'
+  } catch (error) {
+    const message = normalizeUiErrorMessage(error, '当前视频音色提取失败，请上传单独音频。')
+    trainingStatus.value = message
+    setGlobalErrorFromException(error, '当前视频音色提取失败，请上传单独音频。')
+  } finally {
+    creatingVoiceFromMaterial.value = false
   }
 }
 
 const generateVoice = async () => {
-  if (!rawScript.value.trim()) {
-    appError.value = '请先提取或输入原始文案。'
+  const scriptText = currentProject.value.currentScript || currentScript.value
+  if (!scriptText.trim()) {
+    appError.value = '请先选择一版成片文案，或将手动文案设为成片文案。'
+    return
+  }
+  if (!selectedVoiceId.value) {
+    appError.value = '请先选择一个 TTS 声音。'
     return
   }
   voiceGenerating.value = true
   voiceStatus.value = '配音任务创建中'
+  currentProject.value.currentAudio = null
+  synthesisAudioUrl.value = ''
   try {
+    console.info('[StudioAlpha] tts_synthesis', {
+      action: 'tts_synthesis',
+      currentScriptTitle: currentScriptTitle.value || '未命名成片文案',
+      currentScriptLength: scriptText.length,
+      textPreview: scriptText.slice(0, 60),
+      selectedVoiceId: selectedVoiceId.value,
+      selectedVoiceType: selectedVoice.value?.type || 'unknown',
+    })
     const synthesis = await createSynthesis({
-      text: rawScript.value,
+      text: scriptText,
+      voiceId: selectedVoiceId.value,
+      speed: voiceSpeed.value,
+      emotion: selectedEmotion.value,
+      volume: voiceVolume.value,
       language: 'zh',
-      trainingId: trainingReady.value ? trainingId.value : null,
-      voiceMode: trainingReady.value ? 'clone' : 'preset',
       executionProvider: 'cpu',
     })
     synthesisId.value = synthesis.synthesisId
@@ -1020,6 +1416,11 @@ const generateVoice = async () => {
         voiceStatus.value = latest.message || latest.status
         if (latest.audioUrl) {
           synthesisAudioUrl.value = apiUrl(latest.audioUrl)
+          setProjectCurrentAudio({
+            ...latest,
+            synthesisId: synthesis.synthesisId,
+            audioUrl: latest.audioUrl,
+          })
           renderingMeta.value.voiceDuration = renderingMeta.value.sourceDuration
         }
         if (latest.status === 'success') {
@@ -1043,20 +1444,78 @@ const generateVoice = async () => {
   }
 }
 
-const previewVoice = () => {
-  if (!synthesisAudioUrl.value) {
+const generateHumanVideo = async () => {
+  const scriptText = currentProject.value.currentScript || ''
+  const currentAudio = currentProject.value.currentAudio
+  if (!scriptText.trim()) {
+    humanStatus.value = '缺少成片文案'
+    appError.value = '请先输入或选择一版成片文案。'
+    return
+  }
+  if (!currentAudio?.audioUrl) {
+    humanStatus.value = '缺少配音'
     appError.value = '请先生成配音。'
     return
   }
+  if (!selectedAvatarId.value) {
+    humanStatus.value = '未选择数字人'
+    appError.value = '请先选择数字人形象。'
+    return
+  }
+  humanGenerating.value = true
+  humanStatus.value = '数字人任务创建中'
+  appError.value = ''
+  const payload = {
+    script: scriptText,
+    audioId: currentAudio.audioId || currentAudio.synthesisId || '',
+    audioUrl: currentAudio.audioUrl,
+    avatarId: selectedAvatarId.value,
+    mode: 'talking_head',
+  }
+  try {
+    console.info('[StudioAlpha] digital_human_generate', {
+      avatarId: payload.avatarId,
+      audioId: payload.audioId,
+      scriptLength: payload.script.length,
+      scriptPreview: payload.script.slice(0, 60),
+    })
+    const result = await generateDigitalHumanVideo(payload)
+    if (result?.videoUrl) {
+      currentProject.value.previewVideo = {
+        type: 'digital_human',
+        url: result.videoUrl,
+        title: currentProject.value.currentScriptTitle || '数字人口播',
+      }
+      humanStatus.value = result.message || '数字人任务已创建'
+    }
+  } catch (error) {
+    humanStatus.value = normalizeUiErrorMessage(error, '数字人引擎暂未接入。')
+    setGlobalErrorFromException(error, '数字人引擎暂未接入。')
+  } finally {
+    humanGenerating.value = false
+  }
+}
+
+const previewVoice = async () => {
   previewingVoice.value = true
-  voiceStatus.value = '请使用下方播放器试听'
-  window.setTimeout(() => {
+  voiceStatus.value = '试听生成中'
+  try {
+    const preview = await createVoicePreview(selectedVoiceId.value, {
+      text: '你好，这是当前音色的一段试听。',
+    })
+    voicePreviewAudioUrl.value = apiUrl(preview.audioUrl)
+    voiceStatus.value = '试听已生成'
+  } catch (error) {
+    voiceStatus.value = normalizeUiErrorMessage(error, '试听生成失败，请检查 TTS 引擎配置。')
+    setGlobalErrorFromException(error, '试听生成失败，请检查 TTS 引擎配置。')
+  } finally {
     previewingVoice.value = false
-  }, 500)
+  }
 }
 
 onMounted(() => {
   loadAiStatus()
+  loadVoices()
   startTaskPolling()
   loadAllAuthStatuses()
 })
@@ -1100,8 +1559,11 @@ onBeforeUnmount(() => {
             :auth-statuses="authStatuses"
             :auth-hint="authHint"
             :script-source-label="scriptSourceLabel"
+            :is-manual-text-mode="isManualTextMode"
+            :can-set-as-current-script="canSetTextResultAsCurrent"
             @file-selected="handleFileSelected"
             @manual-input="handleManualInput"
+            @set-current-script="setTextResultAsCurrentScript"
             @extract-script="extractScript"
             @start-auth="handleStartAuth"
             @clear-auth="handleClearAuth"
@@ -1120,40 +1582,64 @@ onBeforeUnmount(() => {
             :unavailable-message="rewriteUnavailableMessage"
             :source-usage-text="rewriteSourceUsageText"
             :can-use-platform-text="canUsePlatformTextForRewrite"
+            :can-use-current-text="canSetTextResultAsCurrent"
             @append-template="appendPromptTemplate"
             @rewrite="runRewrite"
             @rewrite-platform="rewriteWithPlatformText"
+            @use-current-text="setTextResultAsCurrentScript"
             @use-result="useRewriteResult"
             @optimize-result="optimizeRewriteResult"
             @copy-result="copyRewriteResult"
           />
 
           <VoiceHumanPanel
-            v-model:selected-voice="selectedVoice"
+            v-model:selected-voice-id="selectedVoiceId"
             v-model:selected-emotion="selectedEmotion"
             v-model:speed="voiceSpeed"
             v-model:volume="voiceVolume"
             v-model:selected-avatar-id="selectedAvatarId"
             v-model:selected-scene="selectedScene"
             v-model:selected-background="selectedBackground"
-            :voices="voiceOptions"
+            :voices="voices"
             :emotions="emotionOptions"
             :avatars="avatarOptions"
             :scene-options="sceneOptions"
             :background-options="backgroundOptions"
             :previewing-voice="previewingVoice"
             :voice-generating="voiceGenerating"
-            :human-generating="false"
+            :human-generating="humanGenerating"
             :voice-status="voiceStatus"
             :human-status="humanStatus"
             :training-status="trainingStatus"
-            :training-ready="trainingReady"
+            :can-create-voice-from-material="currentMaterialLocalReady"
+            :creating-voice-from-material="creatingVoiceFromMaterial"
+            :has-current-material-voice="hasCurrentMaterialVoice"
             :synthesis-audio-url="synthesisAudioUrl"
-            :reference-audio-name="referenceAudioName"
+            :voice-preview-audio-url="voicePreviewAudioUrl"
+            :voice-reference-audio-url="selectedVoiceReferenceAudioUrl"
+            :voice-quality-warnings="selectedVoiceQualityWarnings"
+            :voice-create-dialog-visible="voiceCreateDialogVisible"
+            :voice-create-loading="voiceCreateLoading"
+            :voice-create-name="voiceCreateName"
+            :voice-create-audio-name="voiceCreateAudioName"
+            :voice-create-consent="voiceCreateConsent"
+            :voice-create-error="voiceCreateError"
+            :current-script="currentProject.currentScript"
+            :current-script-source="currentProject.currentScriptSource"
+            :current-script-title="currentProject.currentScriptTitle"
+            :current-audio="currentProject.currentAudio"
+            :can-generate-human-video="canGenerateAvatarVideo"
+            :human-generate-hint="humanGenerateHint"
             @preview-voice="previewVoice"
             @generate-voice="generateVoice"
-            @reference-audio-selected="handleReferenceAudioSelected"
-            @create-training="startTraining"
+            @generate-human-video="generateHumanVideo"
+            @open-voice-create="openVoiceCreateDialog"
+            @create-voice-from-material="createVoiceFromCurrentMaterial"
+            @close-voice-create="closeVoiceCreateDialog"
+            @voice-create-audio-selected="handleVoiceCreateAudioSelected"
+            @create-voice="createCustomVoice"
+            @update:voice-create-name="voiceCreateName = $event"
+            @update:voice-create-consent="voiceCreateConsent = $event"
           />
 
           <ExportPanel
@@ -1176,14 +1662,24 @@ onBeforeUnmount(() => {
             :rendering="false"
             :subtitle-status="subtitleStatus"
             :subtitle-downloads="subtitleDownloads"
+            :script-ready="projectStepStatus.scriptReady"
+            :audio-ready="projectStepStatus.audioReady"
+            :current-script="currentProject.currentScript"
+            :current-audio="currentProject.currentAudio"
           />
 
           <VideoPreviewPanel
-            :material="material"
+            :material="currentProject.material"
             :read-status="readStatus"
             :material-lamp="materialLamp"
             :material-lamp-text="materialLampText"
             :material-local-ready="currentMaterialLocalReady"
+            :is-manual-text-mode="isManualTextMode"
+            :current-script="currentProject.currentScript"
+            :current-script-title="currentProject.currentScriptTitle"
+            :current-audio="currentProject.currentAudio"
+            :selected-avatar="selectedAvatar"
+            :project-step-status="projectStepStatus"
             :preview-state="previewState"
             :preview-title="previewTitle"
             :current-step="currentStep"

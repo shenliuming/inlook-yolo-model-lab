@@ -1,5 +1,7 @@
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   voices: {
     type: Array,
     required: true,
@@ -20,7 +22,7 @@ defineProps({
     type: Array,
     required: true,
   },
-  selectedVoice: {
+  selectedVoiceId: {
     type: String,
     required: true,
   },
@@ -72,7 +74,15 @@ defineProps({
     type: String,
     default: '未创建音色',
   },
-  trainingReady: {
+  canCreateVoiceFromMaterial: {
+    type: Boolean,
+    default: false,
+  },
+  creatingVoiceFromMaterial: {
+    type: Boolean,
+    default: false,
+  },
+  hasCurrentMaterialVoice: {
     type: Boolean,
     default: false,
   },
@@ -80,14 +90,70 @@ defineProps({
     type: String,
     default: '',
   },
-  referenceAudioName: {
+  voicePreviewAudioUrl: {
     type: String,
     default: '',
+  },
+  voiceReferenceAudioUrl: {
+    type: String,
+    default: '',
+  },
+  voiceQualityWarnings: {
+    type: Array,
+    default: () => [],
+  },
+  voiceCreateDialogVisible: {
+    type: Boolean,
+    default: false,
+  },
+  voiceCreateLoading: {
+    type: Boolean,
+    default: false,
+  },
+  voiceCreateName: {
+    type: String,
+    default: '',
+  },
+  voiceCreateAudioName: {
+    type: String,
+    default: '',
+  },
+  voiceCreateConsent: {
+    type: Boolean,
+    default: false,
+  },
+  voiceCreateError: {
+    type: String,
+    default: '',
+  },
+  currentScript: {
+    type: String,
+    default: '',
+  },
+  currentScriptSource: {
+    type: String,
+    default: 'empty',
+  },
+  currentScriptTitle: {
+    type: String,
+    default: '',
+  },
+  currentAudio: {
+    type: Object,
+    default: null,
+  },
+  canGenerateHumanVideo: {
+    type: Boolean,
+    default: false,
+  },
+  humanGenerateHint: {
+    type: String,
+    default: '请先输入或选择一版成片文案。',
   },
 })
 
 defineEmits([
-  'update:selectedVoice',
+  'update:selectedVoiceId',
   'update:selectedEmotion',
   'update:speed',
   'update:volume',
@@ -97,9 +163,18 @@ defineEmits([
   'preview-voice',
   'generate-voice',
   'generate-human-video',
-  'reference-audio-selected',
-  'create-training',
+  'open-voice-create',
+  'create-voice-from-material',
+  'close-voice-create',
+  'voice-create-audio-selected',
+  'create-voice',
+  'update:voiceCreateName',
+  'update:voiceCreateConsent',
 ])
+
+const currentScriptLength = computed(() => props.currentScript.trim().length)
+const hasCurrentScript = computed(() => currentScriptLength.value > 0)
+const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
 </script>
 
 <template>
@@ -119,22 +194,33 @@ defineEmits([
         </div>
 
         <div class="stack-md">
+          <div class="info-block">
+            <span>当前配音文案：{{ hasCurrentScript ? currentScriptTitle || '成片文案' : '未选择' }} · 字数：{{ currentScriptLength }}</span>
+            <span v-if="!hasCurrentScript">请先选择一版成片文案，或将手动文案设为成片文案</span>
+          </div>
+
           <div class="field">
-            <span class="field-label">参考音频</span>
+            <span class="field-label">我的音色</span>
             <div class="button-row">
-              <label class="secondary-button file-button">
-                选择参考音频
-                <input type="file" accept="audio/*" class="hidden-input" @change="$emit('reference-audio-selected', $event)" />
-              </label>
-              <button class="secondary-button" type="button" @click="$emit('create-training')">创建音色</button>
+              <button class="secondary-button" type="button" @click="$emit('open-voice-create')">创建音色</button>
+              <button
+                class="secondary-button"
+                type="button"
+                :disabled="!canCreateVoiceFromMaterial || creatingVoiceFromMaterial"
+                @click="$emit('create-voice-from-material')"
+              >
+                {{ creatingVoiceFromMaterial ? '创建中...' : hasCurrentMaterialVoice ? '使用视频参考音频' : '从视频提取参考音频' }}
+              </button>
             </div>
-            <span class="field-meta">{{ referenceAudioName || trainingStatus }}</span>
+            <span class="field-meta">{{ trainingStatus }}</span>
           </div>
 
           <label class="field">
             <span class="field-label">TTS 声音</span>
-            <select class="select-input" :value="selectedVoice" @change="$emit('update:selectedVoice', $event.target.value)">
-              <option v-for="voice in voices" :key="voice" :value="voice">{{ voice }}</option>
+            <select class="select-input" :value="selectedVoiceId" @change="$emit('update:selectedVoiceId', $event.target.value)">
+              <option v-for="voice in voices" :key="voice.voiceId" :value="voice.voiceId">
+                {{ voice.name }}{{ voice.type === 'custom' ? ' · 我的音色' : '' }}
+              </option>
             </select>
           </label>
 
@@ -169,11 +255,97 @@ defineEmits([
             <button class="secondary-button" type="button" :disabled="previewingVoice" @click="$emit('preview-voice')">
               {{ previewingVoice ? '试听中...' : '试听' }}
             </button>
-            <button class="primary-button" type="button" :disabled="voiceGenerating" @click="$emit('generate-voice')">
+            <button class="primary-button" type="button" :disabled="voiceGenerating || !hasCurrentScript" @click="$emit('generate-voice')">
               {{ voiceGenerating ? '生成中...' : '生成配音' }}
             </button>
           </div>
-          <audio v-if="synthesisAudioUrl" class="audio-player" :src="synthesisAudioUrl" controls></audio>
+          <div v-if="voiceReferenceAudioUrl" class="audio-section">
+            <span class="field-meta">参考音频试听</span>
+            <audio class="audio-player" :src="voiceReferenceAudioUrl" controls></audio>
+            <span class="field-meta">这里应该是清晰人声。如果听起来像背景音乐、杂音或机器声，请上传单独音频。</span>
+            <span v-if="voiceQualityWarnings.length" class="field-meta">{{ voiceQualityWarnings.join(' ') }}</span>
+          </div>
+          <div v-if="voicePreviewAudioUrl" class="audio-section">
+            <span class="field-meta">音色试听</span>
+            <audio class="audio-player" :src="voicePreviewAudioUrl" controls></audio>
+          </div>
+          <div v-if="synthesisAudioUrl" class="audio-section">
+            <span class="field-meta">正式配音</span>
+            <audio class="audio-player" :src="synthesisAudioUrl" controls></audio>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="voiceCreateDialogVisible" class="voice-dialog-backdrop" @click.self="$emit('close-voice-create')">
+        <div class="voice-dialog">
+          <div class="voice-dialog__header">
+            <div>
+              <h3>创建音色</h3>
+              <p>上传本人或已授权的清晰人声，用于后续配音生成。</p>
+            </div>
+            <button class="icon-button" type="button" :disabled="voiceCreateLoading" @click="$emit('close-voice-create')">×</button>
+          </div>
+
+          <div class="stack-md">
+            <label class="field">
+              <span class="field-label">音色名称</span>
+              <input
+                class="text-input"
+                type="text"
+                :value="voiceCreateName"
+                :disabled="voiceCreateLoading"
+                placeholder="我的音色"
+                @input="$emit('update:voiceCreateName', $event.target.value)"
+              />
+            </label>
+
+            <div class="field">
+              <span class="field-label">参考音频</span>
+              <div class="button-row">
+                <label class="secondary-button file-button">
+                  上传音频
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    class="hidden-input"
+                    :disabled="voiceCreateLoading"
+                    @change="$emit('voice-create-audio-selected', $event)"
+                  />
+                </label>
+              </div>
+              <span class="field-meta">{{ voiceCreateAudioName || '请选择 10 秒以上的清晰人声' }}</span>
+            </div>
+
+            <div class="info-block">
+              建议 30 秒以上，环境安静，不要有背景音乐，普通说话即可。录制音频功能后续接入。
+            </div>
+
+            <label class="consent-row">
+              <input
+                type="checkbox"
+                :checked="voiceCreateConsent"
+                :disabled="voiceCreateLoading"
+                @change="$emit('update:voiceCreateConsent', $event.target.checked)"
+              />
+              <span>我确认该声音属于本人或已获得授权，仅用于合法内容创作。</span>
+            </label>
+
+            <p v-if="voiceCreateError" class="inline-error">{{ voiceCreateError }}</p>
+
+            <div class="button-row button-row--end">
+              <button class="secondary-button" type="button" :disabled="voiceCreateLoading" @click="$emit('close-voice-create')">
+                取消
+              </button>
+              <button
+                class="primary-button"
+                type="button"
+                :disabled="voiceCreateLoading || !voiceCreateConsent || !voiceCreateAudioName"
+                @click="$emit('create-voice')"
+              >
+                {{ voiceCreateLoading ? '创建中...' : '创建音色' }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -218,8 +390,18 @@ defineEmits([
           </label>
         </div>
 
-        <button class="primary-button primary-button--full" type="button" :disabled="true" @click="$emit('generate-human-video')">
-          数字人待接入
+        <div class="info-block">
+          <span>数字人输入：文案 {{ hasCurrentScript ? '已选择' : '未选择' }} · 配音 {{ hasCurrentAudio ? '已生成' : '未生成' }}</span>
+          <span>{{ humanGenerateHint }}</span>
+        </div>
+
+        <button
+          class="primary-button primary-button--full"
+          type="button"
+          :disabled="humanGenerating || !canGenerateHumanVideo"
+          @click="$emit('generate-human-video')"
+        >
+          {{ humanGenerating ? '生成中...' : canGenerateHumanVideo ? '生成数字人口播视频' : '数字人待准备' }}
         </button>
       </div>
     </div>

@@ -623,6 +623,10 @@ button {
   flex-wrap: wrap;
 }
 
+.button-row--end {
+  justify-content: flex-end;
+}
+
 .primary-button,
 .secondary-button {
   display: inline-flex;
@@ -668,6 +672,12 @@ button {
   background: #2b2e33;
   border-color: #42464c;
   color: #9fa6b0;
+}
+
+.inline-error {
+  margin: 0;
+  color: #ef9a9a;
+  font-size: 12px;
 }
 
 .primary-button--small,
@@ -1095,6 +1105,61 @@ button {
   background: rgba(8, 10, 14, 0.48);
 }
 
+.voice-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(8, 10, 14, 0.58);
+}
+
+.voice-dialog {
+  width: min(520px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #24262a;
+  box-shadow: 0 22px 52px rgba(0, 0, 0, 0.32);
+}
+
+.voice-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.voice-dialog__header h3 {
+  margin: 0 0 5px;
+  font-size: 16px;
+}
+
+.voice-dialog__header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.voice-dialog > .stack-md {
+  padding: 16px;
+}
+
+.consent-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.consent-row input {
+  margin-top: 2px;
+}
+
 .asset-drawer {
   width: min(420px, 100vw);
   height: 100vh;
@@ -1383,6 +1448,12 @@ button {
 
 .audio-player {
   width: 100%;
+}
+
+.audio-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 @keyframes wave {

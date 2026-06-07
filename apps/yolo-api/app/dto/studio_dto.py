@@ -30,6 +30,11 @@ class TranscriptionCreateRequestDTO(BaseModel):
 
 class TtsSynthesisCreateRequestDTO(BaseModel):
     text: str = Field(min_length=1)
+    voiceId: str | None = Field(default=None, max_length=100)
+    voice: str = Field(default="", max_length=100)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    emotion: str = Field(default="", max_length=100)
+    volume: int = Field(default=80, ge=0, le=100)
     language: str = Field(default="zh")
     trainingId: str | None = None
     voiceMode: Literal["preset", "clone"] = "clone"

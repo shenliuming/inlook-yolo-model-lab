@@ -42,6 +42,10 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  canUseCurrentText: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits([
@@ -49,6 +53,7 @@ const emit = defineEmits([
   'append-template',
   'rewrite',
   'rewrite-platform',
+  'use-current-text',
   'use-result',
   'optimize-result',
   'copy-result',
@@ -121,6 +126,14 @@ const emptyResultText = computed(() => {
       <div class="button-row">
         <button class="primary-button" type="button" :disabled="!featureReady || isRewriting" @click="emit('rewrite')">
           {{ primaryButtonText }}
+        </button>
+        <button
+          class="secondary-button"
+          type="button"
+          :disabled="!canUseCurrentText || isRewriting"
+          @click="emit('use-current-text')"
+        >
+          直接用当前文案
         </button>
       </div>
       <p v-if="showUnavailableHint" class="helper-text">{{ unavailableMessage }}</p>

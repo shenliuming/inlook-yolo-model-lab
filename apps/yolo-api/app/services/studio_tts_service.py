@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -11,12 +12,14 @@ from fastapi import BackgroundTasks, HTTPException, UploadFile
 
 from app.config.paths import STUDIO_TTS_TRAINING_RUNTIME_DIR
 from app.services.tts_service import create_tts_task, get_tts_task
+from app.services.voice_profile_service import list_voice_profiles, resolve_voice_for_synthesis
 from app.utils.file_utils import safe_filename
 
 RUNTIME_ROOT = STUDIO_TTS_TRAINING_RUNTIME_DIR
 RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_PROMPT_AUDIO_BYTES = 20 * 1024 * 1024
 _task_lock = threading.Lock()
+logger = logging.getLogger("inlook.yolo_api")
 
 
 def now() -> str:
@@ -180,32 +183,48 @@ def get_tts_training_file(training_id: str, filename: str) -> Path:
     return path
 
 
-def list_tts_voices() -> list[dict[str, str]]:
-    return [
-        {"voiceId": "preset-junhao", "name": "磁性男声", "mode": "preset"},
-        {"voiceId": "preset-ava", "name": "温柔女声", "mode": "preset"},
-        {"voiceId": "preset-teacher", "name": "知识老师", "mode": "preset"},
-        {"voiceId": "preset-normal", "name": "普通人口播", "mode": "preset"},
-    ]
+def list_tts_voices() -> list[dict[str, Any]]:
+    return list_voice_profiles()["voices"]
 
 
 def create_tts_synthesis(
     *,
     background_tasks: BackgroundTasks,
     text: str,
+    voice_id: str | None,
+    speed: float,
+    emotion: str,
+    volume: int,
     language: str,
     training_id: str | None,
     voice_mode: str,
     execution_provider: str,
 ) -> dict[str, Any]:
+    clean_text = (text or "").strip()
+    logger.info(
+        "studio tts synthesis requested voiceId=%s textLength=%s textPreview=%s",
+        voice_id or training_id or "builtin",
+        len(clean_text),
+        clean_text[:60],
+    )
     prompt_audio_path = ""
     resolved_voice_mode = voice_mode
-    if training_id:
+    builtin_voice = None
+    resolved_voice_id = voice_id
+    if voice_id:
+        voice = resolve_voice_for_synthesis(voice_id)
+        resolved_voice_id = voice["voiceId"]
+        prompt_audio_path = voice["promptAudioPath"]
+        resolved_voice_mode = voice["voiceMode"]
+        builtin_voice = voice["mossVoice"]
+    elif training_id:
         training = read_training(training_id)
         if training.get("status") != "success":
             raise HTTPException(status_code=400, detail="音色训练尚未完成")
         prompt_audio_path = str(training_dir(training_id) / "inputs" / "reference.wav")
         resolved_voice_mode = "clone"
+        resolved_voice_id = training_id
+        builtin_voice = "Junhao"
     elif voice_mode == "clone":
         raise HTTPException(status_code=400, detail="克隆模式需要先创建音色训练")
 
@@ -220,13 +239,20 @@ def create_tts_synthesis(
         prompt_audio=None,
         prompt_audio_path=prompt_audio_path,
         text_file=None,
+        builtin_voice=builtin_voice,
     )
     return {
         "synthesisId": task["task_id"],
         "taskId": task["task_id"],
+        "voiceId": resolved_voice_id,
         "trainingId": training_id,
         "status": task.get("status"),
         "message": task.get("message"),
+        "settings": {
+            "speed": speed,
+            "emotion": emotion,
+            "volume": volume,
+        },
         "audioUrl": task.get("audio_url"),
         "downloads": task.get("downloads") or {},
         "createdAt": task.get("created_at"),

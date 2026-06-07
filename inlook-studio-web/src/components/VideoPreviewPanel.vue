@@ -22,6 +22,30 @@ const props = defineProps({
     type: Boolean,
     default: false,
   },
+  isManualTextMode: {
+    type: Boolean,
+    default: false,
+  },
+  currentScript: {
+    type: String,
+    default: '',
+  },
+  currentScriptTitle: {
+    type: String,
+    default: '',
+  },
+  currentAudio: {
+    type: Object,
+    default: null,
+  },
+  selectedAvatar: {
+    type: Object,
+    default: null,
+  },
+  projectStepStatus: {
+    type: Object,
+    default: () => ({}),
+  },
   previewState: {
     type: String,
     required: true,
@@ -65,14 +89,21 @@ const formatBytes = (value) => {
 
 const hasMaterial = computed(() => Boolean(props.materialLocalReady && props.material?.localVideoUrl))
 const hasFinal = computed(() => Boolean(props.finalVideoUrl))
+const hasProjectScript = computed(() => Boolean(props.currentScript?.trim()))
+const hasProjectAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
+const currentScriptPreview = computed(() => props.currentScript.trim().slice(0, 88))
 const previewTitleText = computed(() => {
   if (hasFinal.value) return '成片预览'
   if (hasMaterial.value) return '素材预览'
+  if (hasProjectAudio.value) return '纯文案数字人'
+  if (props.isManualTextMode || hasProjectScript.value) return '文案模式'
   return '预览'
 })
 const previewStatusText = computed(() => {
   if (hasFinal.value) return '成片已生成'
   if (hasMaterial.value) return '素材已读取，待提取口播文案'
+  if (hasProjectAudio.value) return '当前模式：纯文案数字人，待生成口播视频。'
+  if (props.isManualTextMode || hasProjectScript.value) return '当前为纯文案模式，暂无视频素材预览。'
   return '暂无素材预览'
 })
 </script>
@@ -111,7 +142,8 @@ const previewStatusText = computed(() => {
         </template>
         <div v-else class="preview-idle">
           <div class="preview-idle__screen"></div>
-          <p>暂无素材预览</p>
+          <p v-if="hasProjectScript">{{ currentScriptPreview }}</p>
+          <p v-else>{{ isManualTextMode ? '当前为纯文案模式，暂无视频素材预览。' : '暂无素材预览' }}</p>
         </div>
 
         <div v-if="previewState === 'rendering'" class="preview-overlay">
@@ -142,6 +174,14 @@ const previewStatusText = computed(() => {
           <div class="meta-row"><span>时长</span><strong>{{ material.video?.duration || 0 }}s</strong></div>
           <div class="meta-row"><span>分辨率</span><strong>{{ material.video?.width || 0 }} × {{ material.video?.height || 0 }}</strong></div>
           <div class="meta-row"><span>文件大小</span><strong>{{ formatBytes(material.video?.fileSize) }}</strong></div>
+        </template>
+        <template v-else-if="isManualTextMode || hasProjectScript || hasProjectAudio">
+          <div class="meta-row"><span>当前状态</span><strong>{{ hasProjectAudio ? '纯文案数字人' : '纯文案模式' }}</strong></div>
+          <div class="meta-row"><span>素材预览</span><strong>暂无视频素材</strong></div>
+          <div class="meta-row"><span>文案标题</span><strong>{{ currentScriptTitle || '--' }}</strong></div>
+          <div class="meta-row"><span>成片文案</span><strong>{{ hasProjectScript ? `${currentScript.length} 字` : '未选择' }}</strong></div>
+          <div class="meta-row"><span>正式配音</span><strong>{{ hasProjectAudio ? '已生成' : '未生成' }}</strong></div>
+          <div class="meta-row"><span>数字人形象</span><strong>{{ selectedAvatar?.name || '--' }}</strong></div>
         </template>
         <template v-else>
           <div class="meta-row"><span>当前步骤</span><strong>{{ currentStep }}</strong></div>
@@ -187,7 +227,11 @@ const previewStatusText = computed(() => {
           打开封面
         </a>
       </div>
-      <template v-else>
+      <div v-else-if="hasProjectAudio" class="audio-section">
+        <span class="field-meta">当前项目配音</span>
+        <audio class="audio-player" :src="currentAudio.audioUrl" controls></audio>
+      </div>
+      <template v-else-if="!isManualTextMode && !hasProjectScript">
         <div class="button-row">
           <button class="secondary-button" type="button" :disabled="true">预览待接入</button>
           <button class="secondary-button" type="button" :disabled="true">打开文件夹待接入</button>
