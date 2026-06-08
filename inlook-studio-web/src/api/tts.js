@@ -4,6 +4,21 @@ export const listVoices = async () => parseApiData(await apiFetch('/api/v1/tts/v
 
 export const listVoiceProfiles = async () => parseApiData(await apiFetch('/api/v1/voices'))
 
+export const getVoiceProfile = async (voiceId) =>
+  parseApiData(await apiFetch(`/api/v1/voices/${voiceId}`))
+
+export const updateVoiceProfile = async (voiceId, payload) =>
+  parseApiData(
+    await apiFetch(`/api/v1/voices/${voiceId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  )
+
+export const deleteVoiceProfile = async (voiceId) =>
+  parseApiData(await apiFetch(`/api/v1/voices/${voiceId}`, { method: 'DELETE' }))
+
 export const createVoiceProfile = async (formData) =>
   parseApiData(await apiFetch('/api/v1/voices', { method: 'POST', body: formData }))
 

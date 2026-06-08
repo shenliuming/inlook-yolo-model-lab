@@ -5,6 +5,7 @@ import StudioSidebar from './components/StudioSidebar.vue'
 import MaterialScriptPanel from './components/MaterialScriptPanel.vue'
 import PromptRewritePanel from './components/PromptRewritePanel.vue'
 import VoiceHumanPanel from './components/VoiceHumanPanel.vue'
+import VoiceLibraryView from './components/VoiceLibraryView.vue'
 import ExportPanel from './components/ExportPanel.vue'
 import VideoPreviewPanel from './components/VideoPreviewPanel.vue'
 import RecentTaskTable from './components/RecentTaskTable.vue'
@@ -17,8 +18,10 @@ import {
   createVoiceFromMaterial,
   createVoicePreview,
   createVoiceProfile,
+  deleteVoiceProfile,
   getSynthesis,
   listVoiceProfiles,
+  updateVoiceProfile,
 } from './api/tts'
 import { getAiStatus, rewriteCopy } from './api/ai'
 import { apiUrl } from './api/client'
@@ -35,23 +38,13 @@ import {
   sceneOptions,
   subtitlePositions,
   subtitleStyles,
-  voiceOptions,
 } from './data/mockData'
 
 const activeNav = ref('home')
+const currentView = ref('workbench')
 const serviceStatus = ref('运行中')
 const modelStatus = ref('已连接')
 const outputPath = ref('D:/Inlook_Outputs')
-
-const defaultVoiceProfiles = voiceOptions.map((name, index) => {
-  const ids = ['male_magnetic', 'female_warm', 'teacher_knowledge', 'normal_speaker']
-  return {
-    voiceId: ids[index] || name,
-    name,
-    type: 'builtin',
-    status: 'ready',
-  }
-})
 
 const videoLink = ref('')
 const uploadedFile = ref(null)
@@ -87,8 +80,19 @@ const aiStatus = ref({
   message: 'AI 改写服务未配置，请先配置模型服务。',
 })
 
-const voices = ref(defaultVoiceProfiles)
-const selectedVoiceId = ref(defaultVoiceProfiles[0]?.voiceId || 'male_magnetic')
+const voices = ref([])
+const legacyVoiceNames = new Set(['磁性男声', '温柔女声', '知识老师', '普通人口播'])
+const isCosyVoiceSynthesisReady = (voice) => {
+  const duration = Number(voice?.duration || 0)
+  return (
+    voice?.status === 'ready' &&
+    String(voice?.engine || 'cosyvoice').toLowerCase() === 'cosyvoice' &&
+    voice?.promptTextConfigured === true &&
+    duration >= 10 &&
+    duration <= 30
+  )
+}
+const selectedVoiceId = ref('')
 const selectedEmotion = ref(emotionOptions[0])
 const voiceSpeed = ref(1.0)
 const voiceVolume = ref(82)
@@ -109,6 +113,11 @@ const voiceCreateError = ref('')
 const synthesisId = ref('')
 const synthesisAudioUrl = ref('')
 const voicePreviewAudioUrl = ref('')
+const voiceLibraryLoading = ref(false)
+const voiceLibraryBusyId = ref('')
+const voiceLibraryMessage = ref('')
+const voiceLibraryPreviewAudioUrl = ref('')
+const voiceLibraryPreviewVoiceId = ref('')
 const selectedAvatarId = ref(avatarOptions[0].id)
 const selectedScene = ref(sceneOptions[0])
 const selectedBackground = ref(backgroundOptions[0])
@@ -264,6 +273,7 @@ const isInputDirty = computed(() => {
 const currentMaterialLocalReady = computed(() => materialLocalReady.value && !isInputDirty.value)
 
 const selectedVoice = computed(() => voices.value.find((voice) => voice.voiceId === selectedVoiceId.value) || null)
+const activeTtsText = computed(() => currentProject.value.currentScript || '')
 
 const projectStepStatus = computed(() => ({
   materialReady: Boolean(
@@ -424,8 +434,9 @@ watch(
 
 const selectedVoiceReferenceAudioUrl = computed(() => {
   const voice = selectedVoice.value
-  if (voice?.type !== 'custom' || !voice.referenceAudioUrl) return ''
-  return apiUrl(voice.referenceAudioUrl)
+  const url = String(voice?.referenceAudioUrl || '')
+  if (!url) return ''
+  return /^https?:\/\//i.test(url) ? url : apiUrl(url)
 })
 
 const selectedVoiceQualityWarnings = computed(() => selectedVoice.value?.quality?.warnings || [])
@@ -485,6 +496,34 @@ const normalizeUiErrorMessage = (error, fallback = '操作失败，请稍后重�
   }
   if (/[A-Za-z]/.test(message)) return fallback
   return message.length > 28 ? `${message.slice(0, 28)}…` : message
+}
+
+const ttsErrorMessage = (payload, fallback = '语音合成失败') => {
+  const data = payload?.data || payload || {}
+  const errorType = String(data?.errorType || data?.error_type || '')
+  const reason = String(data?.reason || '')
+  const type = errorType || reason
+  const typeMessages = {
+    cosyvoice_not_installed: 'CosyVoice 运行依赖未安装。',
+    cosyvoice_not_ready: 'CosyVoice 未配置或不可用，请检查 TTS 引擎配置。',
+    cosyvoice_model_missing: 'CosyVoice 模型目录不存在。',
+    model_dir_missing: 'CosyVoice 模型目录不存在。',
+    reference_audio_missing: '当前音色缺少参考音频。',
+    voice_reference_missing: '当前音色缺少参考音频。',
+    voice_not_found: '当前音色不存在。',
+    tts_text_required: '当前配音文案为空。',
+    empty_text: '当前配音文案为空。',
+    voice_prompt_text_missing: '当前音色缺少参考文本。',
+    prompt_text_required: '当前音色缺少参考文本。',
+    voice_profile_invalid: '当前音色配置无效，请重新创建音色。',
+    prompt_text_mismatch: '当前音色参考文本与参考音频不匹配，请重新创建音色。',
+    reference_audio_too_short: '当前音色参考音频太短。',
+    reference_audio_format_invalid: '当前音色参考音频格式不符合要求。',
+    reference_audio_volume_too_low: '当前音色参考音频人声过低。',
+  }
+  if (typeMessages[type]) return typeMessages[type]
+  const message = String(payload?.message || data?.message || '')
+  return message ? `语音合成失败：${message}` : fallback
 }
 
 const normalizeMaterialReadErrorMessage = (error) => {
@@ -1188,16 +1227,42 @@ const loadAiStatus = async () => {
 }
 
 const loadVoices = async () => {
+  voiceLibraryLoading.value = true
   try {
     const payload = await listVoiceProfiles()
     const nextVoices = Array.isArray(payload?.voices) ? payload.voices : []
-    voices.value = nextVoices.length ? nextVoices : defaultVoiceProfiles
+    const voicesById = new Map()
+    nextVoices.forEach((voice) => {
+      const voiceId = String(voice?.voiceId || '').trim()
+      const voiceName = String(voice?.name || '').trim()
+      if (
+        !voiceId ||
+        voice.type === 'builtin' ||
+        legacyVoiceNames.has(voiceName) ||
+        !isCosyVoiceSynthesisReady(voice) ||
+        voicesById.has(voiceId)
+      ) {
+        return
+      }
+      voicesById.set(voiceId, {
+        ...voice,
+        voiceId,
+        engine: voice.engine || 'cosyvoice',
+        source: voice.source || '',
+      })
+    })
+    voices.value = [...voicesById.values()]
     if (!voices.value.some((voice) => voice.voiceId === selectedVoiceId.value)) {
-      selectedVoiceId.value = voices.value[0]?.voiceId || 'male_magnetic'
+      selectedVoiceId.value = voices.value[0]?.voiceId || ''
     }
+    voiceLibraryMessage.value = ''
   } catch (error) {
-    voices.value = defaultVoiceProfiles
+    voices.value = []
+    selectedVoiceId.value = ''
+    voiceLibraryMessage.value = normalizeUiErrorMessage(error, '音色库读取失败，请稍后重试。')
     console.error(error)
+  } finally {
+    voiceLibraryLoading.value = false
   }
 }
 
@@ -1227,8 +1292,15 @@ const runRewrite = async (options = {}) => {
       instruction: promptText.value,
       template: selectedRewriteTemplate.value,
     })
-    const results = Array.isArray(payload?.results) ? payload.results : []
-    rewriteResults.value = results.filter((item) => item?.content)
+    const versions = Array.isArray(payload?.versions) ? payload.versions : []
+    rewriteResults.value = versions
+      .map((item, index) => ({
+        id: String(item?.id || String.fromCharCode(65 + index)).trim(),
+        title: String(item?.title || `版本 ${String.fromCharCode(65 + index)}`).trim(),
+        text: String(item?.text || '').trim(),
+        reason: String(item?.reason || '已改写为更自然的口播表达。').trim(),
+      }))
+      .filter((item) => item.id && item.text)
     currentProject.value.rewriteVersions = rewriteResults.value
     currentProject.value.selectedRewriteVersionId = null
     activeResultId.value = rewriteResults.value[0]?.id || ''
@@ -1255,9 +1327,9 @@ const runRewrite = async (options = {}) => {
 
 const useRewriteResult = (id) => {
   const result = rewriteResults.value.find((item) => item.id === id)
-  if (!result?.content) return
+  if (!result?.text) return
   setProjectCurrentScript({
-    text: result.content,
+    text: result.text,
     source: 'rewrite_version',
     title: result.title || `版本 ${id}`,
     activeResult: id,
@@ -1280,7 +1352,7 @@ const setTextResultAsCurrentScript = () => {
 
 const optimizeRewriteResult = (id) => {
   const result = rewriteResults.value.find((item) => item.id === id)
-  if (!result?.content) return
+  if (!result?.text) return
   activeResultId.value = id
   promptText.value = `${promptText.value.trim()}；继续优化 ${result.title}，让表达更自然、更像真实口播。`
 }
@@ -1392,7 +1464,8 @@ const createVoiceFromCurrentMaterial = async () => {
 }
 
 const generateVoice = async () => {
-  const scriptText = currentProject.value.currentScript || currentScript.value
+  const displayedScriptText = currentProject.value.currentScript || ''
+  const scriptText = activeTtsText.value
   if (!scriptText.trim()) {
     appError.value = '请先选择一版成片文案，或将手动文案设为成片文案。'
     return
@@ -1406,15 +1479,7 @@ const generateVoice = async () => {
   currentProject.value.currentAudio = null
   synthesisAudioUrl.value = ''
   try {
-    console.info('[StudioAlpha] tts_synthesis', {
-      action: 'tts_synthesis',
-      currentScriptTitle: currentScriptTitle.value || '未命名成片文案',
-      currentScriptLength: scriptText.length,
-      textPreview: scriptText.slice(0, 60),
-      selectedVoiceId: selectedVoiceId.value,
-      selectedVoiceType: selectedVoice.value?.type || 'unknown',
-    })
-    const synthesis = await createSynthesis({
+    const requestPayload = {
       text: scriptText,
       voiceId: selectedVoiceId.value,
       speed: voiceSpeed.value,
@@ -1422,7 +1487,28 @@ const generateVoice = async () => {
       volume: voiceVolume.value,
       language: 'zh',
       executionProvider: 'cpu',
-    })
+    }
+    if (import.meta.env.DEV) {
+      console.info('[StudioAlpha] tts_synthesis', {
+        action: 'tts_synthesis',
+        displayedCurrentScript: displayedScriptText,
+        displayedCurrentScriptLength: displayedScriptText.length,
+        payloadText: requestPayload.text,
+        payloadTextLength: requestPayload.text.length,
+        payloadTextEqualsDisplayedCurrentScript: requestPayload.text === displayedScriptText,
+        payloadVoiceId: requestPayload.voiceId,
+        selectedVoiceId: selectedVoiceId.value,
+        selectedRewriteVersionId: currentProject.value.selectedRewriteVersionId,
+        materialMode: currentProject.value.materialMode,
+        originalTextSource: currentProject.value.originalTextSource,
+        currentScriptSource: currentProject.value.currentScriptSource,
+        currentScriptTitle: currentScriptTitle.value || '未命名成片文案',
+        currentScriptLength: scriptText.length,
+        textPreview: scriptText.slice(0, 60),
+        selectedVoiceType: selectedVoice.value?.type || 'unknown',
+      })
+    }
+    const synthesis = await createSynthesis(requestPayload)
     synthesisId.value = synthesis.synthesisId
     voiceStatus.value = synthesis.message || '配音任务已创建'
     await fetchTasks()
@@ -1445,17 +1531,24 @@ const generateVoice = async () => {
           synthesisPollTimer = null
         }
         if (latest.status === 'failed') {
+          const message = ttsErrorMessage(latest)
+          voiceStatus.value = message
+          appError.value = message
           voiceGenerating.value = false
           window.clearInterval(synthesisPollTimer)
           synthesisPollTimer = null
         }
       } catch (error) {
-        setGlobalErrorFromException(error, '语音合成状态获取失败，请稍后重试。')
+        const message = ttsErrorMessage(error, '语音合成状态获取失败，请稍后重试。')
+        appError.value = message
+        console.error(error)
       }
     }, 2000)
   } catch (error) {
-    voiceStatus.value = normalizeUiErrorMessage(error, '语音合成失败')
-    setGlobalErrorFromException(error, '语音合成失败，请稍后重试。')
+    const message = ttsErrorMessage(error)
+    voiceStatus.value = message
+    appError.value = message
+    console.error(error)
     voiceGenerating.value = false
   }
 }
@@ -1529,6 +1622,104 @@ const previewVoice = async () => {
   }
 }
 
+const handleSidebarSelect = (navId) => {
+  activeNav.value = navId
+  if (navId === 'voice') {
+    currentView.value = 'voices'
+    loadVoices()
+    return
+  }
+  currentView.value = 'workbench'
+}
+
+const returnToWorkbench = () => {
+  currentView.value = 'workbench'
+  activeNav.value = 'home'
+}
+
+const voiceLibraryErrorMessage = (error, fallback) => {
+  const errorType = String(error?.data?.errorType || '')
+  if (errorType === 'cosyvoice_not_ready') {
+    return 'CosyVoice 未就绪，请先完成模型配置后再试听。'
+  }
+  if (errorType === 'builtin_voice_readonly') {
+    return '内置音色不可修改或删除。'
+  }
+  if (errorType === 'voice_not_found') {
+    return '音色不存在或已被删除。'
+  }
+  return normalizeUiErrorMessage(error, fallback)
+}
+
+const useVoiceFromLibrary = (voice) => {
+  if (!voice?.voiceId) return
+  selectedVoiceId.value = voice.voiceId
+  currentProject.value.selectedVoiceId = voice.voiceId
+  currentProject.value.selectedVoiceType = voice.type || ''
+  voiceStatus.value = `已选择 ${voice.name || voice.voiceId}`
+  voiceLibraryMessage.value = `已选择 ${voice.name || voice.voiceId}`
+  returnToWorkbench()
+}
+
+const renameVoiceFromLibrary = async ({ voiceId, name }) => {
+  if (!voiceId || !name) return
+  voiceLibraryBusyId.value = voiceId
+  voiceLibraryMessage.value = '正在修改音色名称...'
+  try {
+    await updateVoiceProfile(voiceId, { name })
+    await loadVoices()
+    voiceLibraryMessage.value = '音色名称已更新。'
+  } catch (error) {
+    voiceLibraryMessage.value = voiceLibraryErrorMessage(error, '音色名称修改失败，请稍后重试。')
+    console.error(error)
+  } finally {
+    voiceLibraryBusyId.value = ''
+  }
+}
+
+const deleteVoiceFromLibrary = async (voice) => {
+  if (!voice?.voiceId || voice.type === 'builtin') return
+  const confirmed = window.confirm(`确认删除音色「${voice.name || voice.voiceId}」？`)
+  if (!confirmed) return
+  voiceLibraryBusyId.value = voice.voiceId
+  voiceLibraryMessage.value = '正在删除音色...'
+  try {
+    await deleteVoiceProfile(voice.voiceId)
+    if (selectedVoiceId.value === voice.voiceId) {
+      selectedVoiceId.value = ''
+      currentProject.value.selectedVoiceId = ''
+      currentProject.value.selectedVoiceType = ''
+    }
+    await loadVoices()
+    voiceLibraryMessage.value = '音色已删除。'
+  } catch (error) {
+    voiceLibraryMessage.value = voiceLibraryErrorMessage(error, '音色删除失败，请稍后重试。')
+    console.error(error)
+  } finally {
+    voiceLibraryBusyId.value = ''
+  }
+}
+
+const previewVoiceFromLibrary = async (voice) => {
+  if (!voice?.voiceId) return
+  voiceLibraryBusyId.value = voice.voiceId
+  voiceLibraryPreviewVoiceId.value = voice.voiceId
+  voiceLibraryPreviewAudioUrl.value = ''
+  voiceLibraryMessage.value = '正在生成试听...'
+  try {
+    const preview = await createVoicePreview(voice.voiceId, {
+      text: '你好，这是当前音色的一段试听。',
+    })
+    voiceLibraryPreviewAudioUrl.value = preview.audioUrl || ''
+    voiceLibraryMessage.value = '试听已生成。'
+  } catch (error) {
+    voiceLibraryMessage.value = voiceLibraryErrorMessage(error, '音色试听失败，请检查 CosyVoice 配置。')
+    console.error(error)
+  } finally {
+    voiceLibraryBusyId.value = ''
+  }
+}
+
 onMounted(() => {
   loadAiStatus()
   loadVoices()
@@ -1547,7 +1738,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="studio-shell">
-    <StudioSidebar :items="navigationItems" :active-id="activeNav" @select="activeNav = $event" />
+    <StudioSidebar :items="navigationItems" :active-id="activeNav" @select="handleSidebarSelect" />
 
     <div class="studio-main">
       <StudioTopbar
@@ -1559,6 +1750,24 @@ onBeforeUnmount(() => {
       <main class="studio-workbench">
         <p v-if="appError" class="app-banner">{{ appError }}</p>
 
+        <VoiceLibraryView
+          v-if="currentView === 'voices'"
+          :voices="voices"
+          :loading="voiceLibraryLoading"
+          :busy-voice-id="voiceLibraryBusyId"
+          :selected-voice-id="selectedVoiceId"
+          :preview-audio-url="voiceLibraryPreviewAudioUrl"
+          :preview-voice-id="voiceLibraryPreviewVoiceId"
+          :message="voiceLibraryMessage"
+          @return-workbench="returnToWorkbench"
+          @refresh="loadVoices"
+          @use-voice="useVoiceFromLibrary"
+          @rename-voice="renameVoiceFromLibrary"
+          @delete-voice="deleteVoiceFromLibrary"
+          @preview-voice="previewVoiceFromLibrary"
+        />
+
+        <template v-else>
         <div class="workbench-grid">
           <MaterialScriptPanel
             :video-link="videoLink"
@@ -1709,6 +1918,7 @@ onBeforeUnmount(() => {
           :tasks="tasks.slice(0, 5)"
           :total-count="tasks.length"
         />
+        </template>
       </main>
     </div>
   </div>

@@ -4,13 +4,16 @@ from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import FileResponse
 
 from app.common.result import success
-from app.dto.voice_dto import VoiceFromMaterialRequestDTO, VoicePreviewRequestDTO
+from app.dto.voice_dto import VoiceFromMaterialRequestDTO, VoicePreviewRequestDTO, VoiceUpdateRequestDTO
 from app.services.voice_profile_service import (
     create_voice_preview,
     create_voice_profile,
     create_voice_profile_from_material,
+    delete_voice_profile,
+    get_voice_profile,
     get_voice_file,
     list_voice_profiles,
+    update_voice_profile,
 )
 
 router = APIRouter(prefix="/api/v1/voices", tags=["voices"])
@@ -19,6 +22,21 @@ router = APIRouter(prefix="/api/v1/voices", tags=["voices"])
 @router.get("")
 def read_voices():
     return success(list_voice_profiles())
+
+
+@router.get("/{voice_id}")
+def read_voice(voice_id: str):
+    return success(get_voice_profile(voice_id))
+
+
+@router.patch("/{voice_id}")
+def update_voice(voice_id: str, request: VoiceUpdateRequestDTO):
+    return success(update_voice_profile(voice_id=voice_id, name=request.name))
+
+
+@router.delete("/{voice_id}")
+def delete_voice(voice_id: str):
+    return success(delete_voice_profile(voice_id))
 
 
 @router.post("")

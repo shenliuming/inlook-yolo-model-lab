@@ -31,11 +31,8 @@ def rewrite_copy(request: CopyRewriteRequestDTO) -> dict[str, object]:
 
     messages = _build_rewrite_messages(request)
     text = llm.chat(messages, temperature=0.7, max_tokens=1600)
-    results = _parse_rewrite_results(text, DEFAULT_VERSION_COUNT)
-    return {
-        "results": results,
-        "rawText": text,
-    }
+    versions = _parse_rewrite_versions(text, DEFAULT_VERSION_COUNT)
+    return {"versions": versions}
 
 
 def _build_rewrite_messages(request: CopyRewriteRequestDTO) -> list[dict[str, str]]:
@@ -47,7 +44,8 @@ def _build_rewrite_messages(request: CopyRewriteRequestDTO) -> list[dict[str, st
             "content": (
                 "你是 INLOOK Studio 的中文短视频口播文案改写助手。"
                 "只做文案改写，不编造事实，不输出营销废话，不返回解释。"
-                "请返回 JSON，格式为 {\"results\":[{\"title\":\"...\",\"tag\":\"...\",\"content\":\"...\"}]}。"
+                "请返回 JSON，格式为 "
+                "{\"versions\":[{\"id\":\"A\",\"title\":\"真实口播版\",\"text\":\"...\",\"reason\":\"...\"}]}。"
             ),
         },
         {
@@ -70,37 +68,52 @@ def _build_rewrite_messages(request: CopyRewriteRequestDTO) -> list[dict[str, st
     ]
 
 
-def _parse_rewrite_results(text: str, version_count: int) -> list[dict[str, str]]:
+def _parse_rewrite_versions(text: str, version_count: int) -> list[dict[str, str]]:
     parsed = _try_load_json(text)
-    raw_results = parsed.get("results") if isinstance(parsed, dict) else None
-    if isinstance(raw_results, list):
-        results = []
-        for index, item in enumerate(raw_results[:version_count]):
-            if not isinstance(item, dict):
-                continue
-            content = str(item.get("content") or "").strip()
-            if not content:
-                continue
-            results.append(
-                {
-                    "id": _result_id(index),
-                    "title": str(item.get("title") or f"版本 {_result_id(index)}").strip(),
-                    "tag": str(item.get("tag") or "AI 改写").strip(),
-                    "content": content,
-                }
-            )
-        if results:
-            return results
+    raw_versions = _extract_version_items(parsed)
+    versions = []
+    for index, item in enumerate(raw_versions[:version_count]):
+        if not isinstance(item, dict):
+            continue
+        version_id = str(item.get("id") or _result_id(index)).strip() or _result_id(index)
+        content = str(item.get("text") or item.get("content") or "").strip()
+        if not content:
+            continue
+        versions.append(
+            {
+                "id": version_id,
+                "title": str(item.get("title") or f"版本 {version_id}").strip(),
+                "text": content,
+                "reason": str(item.get("reason") or item.get("tag") or "已改写为更自然的口播表达。").strip(),
+            }
+        )
+    if versions:
+        return versions
 
-    # 如果模型没有按 JSON 返回，仍然只返回模型真实文本，不构造假内容。
-    return [
-        {
-            "id": "A",
-            "title": "模型返回",
-            "tag": "AI 改写",
-            "content": text.strip(),
-        }
-    ]
+    raise AppException(
+        error_code.INTERNAL_ERROR,
+        "AI 改写返回格式异常，请重试。",
+        status_code=500,
+        data={"errorType": "rewrite_invalid_response"},
+    )
+
+
+def _extract_version_items(parsed: Any) -> list[Any]:
+    if isinstance(parsed, dict):
+        data = parsed.get("data")
+        if isinstance(data, dict):
+            nested_versions = data.get("versions")
+            if isinstance(nested_versions, list):
+                return nested_versions
+        versions = parsed.get("versions")
+        if isinstance(versions, list):
+            return versions
+        results = parsed.get("results")
+        if isinstance(results, list):
+            return results
+    if isinstance(parsed, list):
+        return parsed
+    return []
 
 
 def _try_load_json(text: str) -> Any:

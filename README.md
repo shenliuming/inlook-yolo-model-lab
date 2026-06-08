@@ -50,34 +50,24 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 ```
 
-### 2.1 Prepare MOSS-TTS-Nano for local TTS
+### 2.1 Prepare CosyVoice for local TTS
 
 ```bash
-git clone https://github.com/OpenMOSS/MOSS-TTS-Nano.git third_party/MOSS-TTS-Nano
 cd apps/yolo-api
 uv pip install -r requirements.txt
 ```
 
-Recommended ONNX CPU smoke test:
+Configure the CosyVoice model directory before starting the backend:
 
 ```bash
-cd third_party/MOSS-TTS-Nano
-python infer_onnx.py \
-  --text "你好，这里是 INLOOK AI 内容工作流。" \
-  --voice Junhao \
-  --execution-provider cpu
+export TTS_ENGINE=cosyvoice
+export COSYVOICE_MODEL_DIR=pretrained_models/CosyVoice2-0.5B
+export COSYVOICE_DEVICE=auto
+export COSYVOICE_SAMPLE_RATE=24000
 ```
 
-If you prefer the CLI entry:
-
-```bash
-cd third_party/MOSS-TTS-Nano
-python -m moss_tts_nano.cli generate \
-  --backend onnx \
-  --text "你好，这里是 INLOOK AI 内容工作流。" \
-  --voice Junhao \
-  --execution-provider cpu
-```
+INLOOK Studio now routes builtin voices, custom voices, and current-video voices
+through CosyVoice only. MOSS-TTS is deprecated and is not used as a fallback.
 
 ### 3. Start FastAPI
 
@@ -154,8 +144,8 @@ inlook-yolo-model-lab/
 │   └── demo/
 ├── docs/
 ├── deploy/
-├── third_party/
-│   └── MOSS-TTS-Nano/      # local clone, not committed with models/generated_audio
+├── pretrained_models/
+│   └── CosyVoice2-0.5B/    # local model directory, not committed
 └── README.md
 ```
 
@@ -177,7 +167,7 @@ TTS-related files:
 
 - `apps/yolo-api/app/controllers/tts_controller.py`
 - `apps/yolo-api/app/services/tts_service.py`
-- `apps/yolo-api/app/clients/moss_tts_client.py`
+- `apps/yolo-api/app/services/tts_engines/cosyvoice_engine.py`
 
 TTS runtime output:
 

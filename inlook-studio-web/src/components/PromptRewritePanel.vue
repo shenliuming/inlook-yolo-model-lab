@@ -166,11 +166,11 @@ const emptyResultText = computed(() => {
             <div class="result-card__head">
               <div>
                 <h3>{{ result.title }}</h3>
-                <p>{{ result.tag }}</p>
+                <p>{{ result.reason }}</p>
               </div>
               <span class="result-card__id">{{ result.id }}</span>
             </div>
-            <p class="result-card__body">{{ result.content }}</p>
+            <p class="result-card__body">{{ result.text }}</p>
             <div class="button-row button-row--compact">
               <button class="primary-button primary-button--small" type="button" :disabled="!featureReady" @click="emit('use-result', result.id)">
                 使用此版本
@@ -178,7 +178,7 @@ const emptyResultText = computed(() => {
               <button class="secondary-button secondary-button--small" type="button" :disabled="!featureReady" @click="emit('optimize-result', result.id)">
                 继续优化
               </button>
-              <button class="secondary-button secondary-button--small" type="button" :disabled="!featureReady" @click="emit('copy-result', result.content)">
+              <button class="secondary-button secondary-button--small" type="button" :disabled="!featureReady" @click="emit('copy-result', result.text)">
                 复制文案
               </button>
             </div>

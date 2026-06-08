@@ -11,12 +11,11 @@ from typing import Any
 
 from fastapi import HTTPException, UploadFile
 
-from app.clients.moss_tts_client import moss_tts_client
 from app.common import error_code
 from app.common.exceptions import AppException
 from app.config.paths import BACKEND_DIR, CONTENT_LAB_VOICES_RUNTIME_DIR
 from app.services.material_service import get_material, get_material_file
-from app.config.settings import get_moss_tts_execution_provider
+from app.services.tts_engines.cosyvoice_engine import cosyvoice_engine
 from app.utils.file_utils import safe_filename
 from app.utils.subprocess_utils import run_command
 
@@ -33,27 +32,70 @@ MAX_REFERENCE_SECONDS = 300.0
 MAX_VIDEO_REFERENCE_SCAN_SECONDS = 180.0
 TARGET_VIDEO_REFERENCE_SECONDS = 30.0
 MIN_VIDEO_SPEECH_SECONDS = 8.0
-REFERENCE_SAMPLE_RATE = 16000
+REFERENCE_SAMPLE_RATE = 24000
 LOW_MEAN_VOLUME_DB = -45.0
 LOW_MAX_VOLUME_DB = -35.0
 CLEAN_REFERENCE_VERSION = "clean_segment_v1"
+MIN_PROMPT_UNITS = 28
+MIN_PROMPT_UNITS_PER_SECOND = 3.5
+MAX_PROMPT_UNITS_PER_SECOND = 12.0
 
 BUILTIN_VOICES = [
-    {"voiceId": "male_magnetic", "name": "磁性男声", "type": "builtin", "mossVoice": "Junhao"},
-    {"voiceId": "female_warm", "name": "温柔女声", "type": "builtin", "mossVoice": "Ava"},
-    {"voiceId": "teacher_knowledge", "name": "知识老师", "type": "builtin", "mossVoice": "Junhao"},
-    {"voiceId": "normal_speaker", "name": "普通人口播", "type": "builtin", "mossVoice": "Junhao"},
+    {
+        "voiceId": "cosy_male_01",
+        "name": "磁性男声",
+        "type": "builtin",
+        "engine": "cosyvoice",
+        "referenceAudioPath": "builtin/cosy_male_01/reference.wav",
+        "promptText": "这是一段用于创建磁性男声音色的参考文本。",
+        "sampleRate": REFERENCE_SAMPLE_RATE,
+        "status": "ready",
+    },
+    {
+        "voiceId": "cosy_female_01",
+        "name": "温柔女声",
+        "type": "builtin",
+        "engine": "cosyvoice",
+        "referenceAudioPath": "builtin/cosy_female_01/reference.wav",
+        "promptText": "这是一段用于创建温柔女声音色的参考文本。",
+        "sampleRate": REFERENCE_SAMPLE_RATE,
+        "status": "ready",
+    },
+    {
+        "voiceId": "cosy_teacher_01",
+        "name": "知识老师",
+        "type": "builtin",
+        "engine": "cosyvoice",
+        "referenceAudioPath": "builtin/cosy_teacher_01/reference.wav",
+        "promptText": "这是一段用于创建知识讲解音色的参考文本。",
+        "sampleRate": REFERENCE_SAMPLE_RATE,
+        "status": "ready",
+    },
+    {
+        "voiceId": "cosy_natural_01",
+        "name": "普通人口播",
+        "type": "builtin",
+        "engine": "cosyvoice",
+        "referenceAudioPath": "builtin/cosy_natural_01/reference.wav",
+        "promptText": "这是一段用于创建普通人口播音色的参考文本。",
+        "sampleRate": REFERENCE_SAMPLE_RATE,
+        "status": "ready",
+    },
 ]
 
 VOICE_ALIASES = {
-    "磁性男声": "male_magnetic",
-    "温柔女声": "female_warm",
-    "知识老师": "teacher_knowledge",
-    "普通人口播": "normal_speaker",
-    "preset-junhao": "male_magnetic",
-    "preset-ava": "female_warm",
-    "preset-teacher": "teacher_knowledge",
-    "preset-normal": "normal_speaker",
+    "磁性男声": "cosy_male_01",
+    "温柔女声": "cosy_female_01",
+    "知识老师": "cosy_teacher_01",
+    "普通人口播": "cosy_natural_01",
+    "male_magnetic": "cosy_male_01",
+    "female_warm": "cosy_female_01",
+    "teacher_knowledge": "cosy_teacher_01",
+    "normal_speaker": "cosy_natural_01",
+    "preset-junhao": "cosy_male_01",
+    "preset-ava": "cosy_female_01",
+    "preset-teacher": "cosy_teacher_01",
+    "preset-normal": "cosy_natural_01",
 }
 
 
@@ -73,6 +115,17 @@ def voice_json_path(voice_id: str) -> Path:
     return voice_dir(voice_id) / "voice.json"
 
 
+def builtin_voice_dir(voice_id: str) -> Path:
+    return VOICES_ROOT / "builtin" / voice_id
+
+
+def builtin_reference_path(voice: dict[str, Any]) -> Path:
+    relative_path = str(voice.get("referenceAudioPath") or "").strip()
+    if relative_path:
+        return VOICES_ROOT / relative_path
+    return builtin_voice_dir(str(voice.get("voiceId") or "")) / "reference.wav"
+
+
 def voice_index_path() -> Path:
     return VOICE_INDEX_PATH
 
@@ -82,6 +135,13 @@ def _relative_runtime_path(path: Path) -> str:
         return str(path.relative_to(BACKEND_DIR))
     except ValueError:
         return str(path)
+
+
+def _resolve_runtime_path(path_text: str) -> Path:
+    path = Path(str(path_text or "").strip()).expanduser()
+    if not path.is_absolute():
+        path = BACKEND_DIR / path
+    return path
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -145,13 +205,19 @@ def voice_index_entry(profile: dict[str, Any]) -> dict[str, Any]:
         "voiceId": profile.get("voiceId"),
         "name": profile.get("name"),
         "type": profile.get("type", "custom"),
+        "engine": profile.get("engine", "cosyvoice"),
         "source": source,
         "materialId": profile.get("materialId"),
         "materialKey": profile.get("materialKey"),
         "referenceAudioPath": profile.get("referenceAudioPath"),
+        "promptText": profile.get("promptText", ""),
         "status": profile.get("status", "ready"),
+        "errorType": profile.get("errorType", ""),
+        "errorReason": profile.get("errorReason", ""),
+        "validation": profile.get("validation") or {},
         "createdAt": profile.get("createdAt"),
         "updatedAt": profile.get("updatedAt"),
+        "lastUsedAt": profile.get("lastUsedAt"),
     }
 
 
@@ -163,6 +229,11 @@ def upsert_voice_index(profile: dict[str, Any]) -> None:
     existing = [item for item in read_voice_index() if item.get("voiceId") != voice_id]
     existing.append(entry)
     write_voice_index(existing)
+
+
+def remove_voice_index_entry(voice_id: str) -> None:
+    normalized = normalize_voice_id(voice_id)
+    write_voice_index([item for item in read_voice_index() if item.get("voiceId") != normalized])
 
 
 def find_current_video_voice(material_id: str, material_key: str = "") -> dict[str, Any] | None:
@@ -177,7 +248,10 @@ def find_current_video_voice(material_id: str, material_key: str = "") -> dict[s
                 continue
             path = voice_json_path(voice_id)
             if path.exists():
-                profile = read_json(path)
+                profile = persist_voice_profile_validation(read_json(path))
+                upsert_voice_index(profile)
+                if profile.get("status") != "ready":
+                    continue
                 return normalize_legacy_current_video_profile(profile, material_key)
 
     for path in sorted(VOICES_ROOT.glob("voice_*/voice.json")):
@@ -191,6 +265,10 @@ def find_current_video_voice(material_id: str, material_key: str = "") -> dict[s
             continue
         if profile.get("materialId") == material_id or (material_key and profile.get("materialKey") == material_key):
             profile = normalize_legacy_current_video_profile(profile, material_key)
+            profile = persist_voice_profile_validation(profile)
+            if profile.get("status") != "ready":
+                upsert_voice_index(profile)
+                continue
             write_json(voice_json_path(profile["voiceId"]), profile)
             upsert_voice_index(profile)
             return profile
@@ -232,7 +310,7 @@ def _probe_audio(audio_path: Path) -> dict[str, Any]:
         "-select_streams",
         "a:0",
         "-show_entries",
-        "format=duration,size:stream=sample_rate,channels,duration",
+        "format=duration,size,format_name:stream=codec_name,sample_fmt,sample_rate,channels,duration",
         "-of",
         "json",
         str(audio_path),
@@ -259,6 +337,9 @@ def _probe_audio(audio_path: Path) -> dict[str, Any]:
     duration = _safe_float(format_payload.get("duration") or stream.get("duration"))
     return {
         "duration": round(duration, 3),
+        "codec": str(stream.get("codec_name") or ""),
+        "sampleFormat": str(stream.get("sample_fmt") or ""),
+        "format": str(format_payload.get("format_name") or ""),
         "sampleRate": int(stream.get("sample_rate") or 0),
         "channels": int(stream.get("channels") or 0),
         "size": int(format_payload.get("size") or audio_path.stat().st_size),
@@ -551,6 +632,188 @@ def current_tts_supports_custom_voice() -> bool:
     return True
 
 
+def infer_prompt_text(reference_path: Path) -> str:
+    try:
+        return cosyvoice_engine.infer_prompt_text(reference_path).strip()
+    except Exception:
+        logger.warning("voice prompt text infer failed: %s", reference_path, exc_info=True)
+        return ""
+
+
+def ensure_profile_prompt_text(profile: dict[str, Any], reference_path: Path) -> str:
+    prompt_text = str(profile.get("promptText") or "").strip()
+    if prompt_text:
+        return prompt_text
+    prompt_text = infer_prompt_text(reference_path)
+    if prompt_text:
+        profile["promptText"] = prompt_text
+        profile["engine"] = "cosyvoice"
+        profile["updatedAt"] = now()
+        voice_id = str(profile.get("voiceId") or "")
+        if voice_id:
+            write_json(voice_json_path(voice_id), profile)
+            upsert_voice_index(profile)
+    return prompt_text
+
+
+def _prompt_units(prompt_text: str) -> int:
+    clean_text = re.sub(r"[\s，。！？、；：,.!?;:'\"“”‘’（）()【】\[\]《》<>—…·-]+", "", prompt_text or "")
+    return len(clean_text)
+
+
+def _voice_validation_result(
+    *,
+    ok: bool,
+    error_type: str = "",
+    reason: str = "",
+    reference_path: Path | None = None,
+    metadata: dict[str, Any] | None = None,
+    prompt_units: int = 0,
+    min_prompt_units: int = 0,
+    max_prompt_units: int = 0,
+) -> dict[str, Any]:
+    return {
+        "ok": ok,
+        "errorType": error_type,
+        "reason": reason,
+        "referenceAudioPath": str(reference_path) if reference_path else "",
+        "metadata": metadata or {},
+        "promptUnits": prompt_units,
+        "minPromptUnits": min_prompt_units,
+        "maxPromptUnits": max_prompt_units,
+    }
+
+
+def _profile_reference_path(profile: dict[str, Any]) -> Path:
+    reference_text = str(profile.get("referenceAudioPath") or "").strip()
+    if reference_text:
+        return _resolve_runtime_path(reference_text)
+    return voice_dir(str(profile.get("voiceId") or "")) / "reference.wav"
+
+
+def validate_voice_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    reference_path = _profile_reference_path(profile)
+    if not reference_path.exists() or not reference_path.is_file():
+        return _voice_validation_result(
+            ok=False,
+            error_type="reference_audio_missing",
+            reason="reference_audio_missing",
+            reference_path=reference_path,
+        )
+
+    try:
+        metadata = _probe_audio(reference_path)
+    except AppException as exc:
+        error_data = exc.data if isinstance(exc.data, dict) else {}
+        return _voice_validation_result(
+            ok=False,
+            error_type="voice_profile_invalid",
+            reason=str(error_data.get("errorType") or "reference_audio_probe_failed"),
+            reference_path=reference_path,
+        )
+
+    duration = float(metadata.get("duration") or 0.0)
+    sample_rate = int(metadata.get("sampleRate") or 0)
+    channels = int(metadata.get("channels") or 0)
+    codec = str(metadata.get("codec") or "")
+    if duration <= 0:
+        return _voice_validation_result(
+            ok=False,
+            error_type="voice_profile_invalid",
+            reason="reference_audio_empty",
+            reference_path=reference_path,
+            metadata=metadata,
+        )
+    if duration < MIN_REFERENCE_SECONDS:
+        return _voice_validation_result(
+            ok=False,
+            error_type="voice_profile_invalid",
+            reason="reference_audio_too_short",
+            reference_path=reference_path,
+            metadata=metadata,
+        )
+    if sample_rate != REFERENCE_SAMPLE_RATE or channels != 1 or codec != "pcm_s16le":
+        return _voice_validation_result(
+            ok=False,
+            error_type="voice_profile_invalid",
+            reason="reference_audio_format_invalid",
+            reference_path=reference_path,
+            metadata=metadata,
+        )
+
+    prompt_text = str(profile.get("promptText") or "").strip()
+    prompt_units = _prompt_units(prompt_text)
+    min_prompt_units = max(MIN_PROMPT_UNITS, int(duration * MIN_PROMPT_UNITS_PER_SECOND))
+    max_prompt_units = max(min_prompt_units + 1, int(duration * MAX_PROMPT_UNITS_PER_SECOND))
+    if not prompt_text:
+        return _voice_validation_result(
+            ok=False,
+            error_type="prompt_text_mismatch",
+            reason="prompt_text_missing",
+            reference_path=reference_path,
+            metadata=metadata,
+            prompt_units=prompt_units,
+            min_prompt_units=min_prompt_units,
+            max_prompt_units=max_prompt_units,
+        )
+    if prompt_units < min_prompt_units:
+        return _voice_validation_result(
+            ok=False,
+            error_type="prompt_text_mismatch",
+            reason="prompt_text_too_short_for_reference",
+            reference_path=reference_path,
+            metadata=metadata,
+            prompt_units=prompt_units,
+            min_prompt_units=min_prompt_units,
+            max_prompt_units=max_prompt_units,
+        )
+    if prompt_units > max_prompt_units:
+        return _voice_validation_result(
+            ok=False,
+            error_type="prompt_text_mismatch",
+            reason="prompt_text_too_long_for_reference",
+            reference_path=reference_path,
+            metadata=metadata,
+            prompt_units=prompt_units,
+            min_prompt_units=min_prompt_units,
+            max_prompt_units=max_prompt_units,
+        )
+
+    return _voice_validation_result(
+        ok=True,
+        reference_path=reference_path,
+        metadata=metadata,
+        prompt_units=prompt_units,
+        min_prompt_units=min_prompt_units,
+        max_prompt_units=max_prompt_units,
+    )
+
+
+def apply_voice_profile_validation(profile: dict[str, Any]) -> dict[str, Any]:
+    next_profile = dict(profile)
+    validation = validate_voice_profile(next_profile)
+    metadata = validation.get("metadata") or {}
+    next_profile["validation"] = validation
+    next_profile["errorType"] = "" if validation["ok"] else validation["errorType"]
+    next_profile["errorReason"] = "" if validation["ok"] else validation["reason"]
+    next_profile["status"] = "ready" if validation["ok"] else "invalid"
+    if metadata:
+        next_profile["duration"] = metadata.get("duration")
+        next_profile["sampleRate"] = metadata.get("sampleRate")
+        next_profile["channels"] = metadata.get("channels")
+        next_profile["codec"] = metadata.get("codec")
+    return next_profile
+
+
+def persist_voice_profile_validation(profile: dict[str, Any]) -> dict[str, Any]:
+    validated = apply_voice_profile_validation(profile)
+    voice_id = str(validated.get("voiceId") or "")
+    if voice_id and validated != profile:
+        validated["updatedAt"] = now()
+        write_json(voice_json_path(voice_id), validated)
+    return validated
+
+
 def is_clean_reference_profile(profile: dict[str, Any]) -> bool:
     extraction = profile.get("referenceExtraction") or {}
     return extraction.get("version") == CLEAN_REFERENCE_VERSION and (voice_dir(str(profile.get("voiceId"))) / "reference.wav").exists()
@@ -591,6 +854,7 @@ def create_voice_profile(*, name: str, audio: UploadFile | None, consent: bool) 
         metadata = _probe_audio(reference_path)
         volume = _measure_volume(reference_path)
         quality = _build_quality(metadata, volume)
+        prompt_text = infer_prompt_text(reference_path)
         if original_metadata.get("duration", 0.0) > MAX_REFERENCE_SECONDS:
             quality["warnings"].append("原始音频超过 5 分钟，已截取前 5 分钟用于创建音色。")
 
@@ -599,9 +863,11 @@ def create_voice_profile(*, name: str, audio: UploadFile | None, consent: bool) 
             "voiceId": voice_id,
             "name": clean_name,
             "type": "custom",
+            "engine": "cosyvoice",
             "status": "ready",
             "source": "upload",
             "referenceAudioPath": _relative_runtime_path(reference_path),
+            "promptText": prompt_text,
             "previewAudioPath": _relative_runtime_path(preview_path),
             "duration": metadata["duration"],
             "sampleRate": metadata["sampleRate"],
@@ -609,7 +875,9 @@ def create_voice_profile(*, name: str, audio: UploadFile | None, consent: bool) 
             "quality": quality,
             "createdAt": created_at,
             "updatedAt": created_at,
+            "lastUsedAt": None,
         }
+        profile = apply_voice_profile_validation(profile)
         write_json(voice_json_path(voice_id), profile)
         upsert_voice_index(profile)
         return voice_profile_to_vo(profile)
@@ -694,6 +962,7 @@ def create_voice_profile_from_material(*, material_id: str, name: str, consent: 
         metadata = _probe_audio(working_reference_path)
         volume = _measure_volume(working_reference_path)
         quality = _build_quality(metadata, volume)
+        prompt_text = infer_prompt_text(working_reference_path)
         quality["warnings"].append("已从当前视频自动截取一段人声作为参考音频，请先试听确认是否干净。")
         if working_reference_path != reference_path:
             shutil.copyfile(working_reference_path, reference_path)
@@ -703,11 +972,13 @@ def create_voice_profile_from_material(*, material_id: str, name: str, consent: 
             "voiceId": voice_id,
             "name": clean_name,
             "type": "custom",
+            "engine": "cosyvoice",
             "status": "ready",
             "source": "current_video",
             "materialId": material_id,
             "materialKey": material_key,
             "referenceAudioPath": _relative_runtime_path(reference_path),
+            "promptText": prompt_text,
             "previewAudioPath": _relative_runtime_path(preview_path),
             "duration": metadata["duration"],
             "sampleRate": metadata["sampleRate"],
@@ -716,9 +987,11 @@ def create_voice_profile_from_material(*, material_id: str, name: str, consent: 
             "referenceExtraction": reference_extraction,
             "createdAt": created_at,
             "updatedAt": created_at,
+            "lastUsedAt": existing.get("lastUsedAt") if existing else None,
         }
         if existing:
             profile["createdAt"] = existing.get("createdAt") or created_at
+        profile = apply_voice_profile_validation(profile)
         write_json(voice_json_path(voice_id), profile)
         upsert_voice_index(profile)
         return voice_profile_to_vo(profile, reused=bool(existing))
@@ -758,82 +1031,200 @@ def voice_profile_to_vo(profile: dict[str, Any], *, reused: bool | None = None) 
         "voiceId": voice_id,
         "name": profile.get("name"),
         "type": voice_type,
+        "engine": profile.get("engine", "cosyvoice"),
         "source": normalize_voice_source(profile),
         "materialId": profile.get("materialId"),
         "materialKey": profile.get("materialKey"),
         "status": profile.get("status", "ready"),
+        "errorType": profile.get("errorType", ""),
+        "errorReason": profile.get("errorReason", ""),
         "previewUrl": f"/api/v1/voices/{voice_id}/preview",
         "referenceAudioUrl": f"/api/v1/voices/{voice_id}/reference.wav" if voice_type == "custom" else "",
+        "promptTextConfigured": bool(str(profile.get("promptText") or "").strip()),
         "duration": profile.get("duration"),
         "sampleRate": profile.get("sampleRate"),
         "channels": profile.get("channels"),
+        "codec": profile.get("codec"),
+        "validation": profile.get("validation") or {},
         "quality": profile.get("quality") or {"ok": True, "warnings": []},
         "referenceExtraction": profile.get("referenceExtraction") or {},
         "createdAt": profile.get("createdAt"),
         "updatedAt": profile.get("updatedAt"),
+        "lastUsedAt": profile.get("lastUsedAt"),
     }
     if reused is not None:
         payload["reused"] = reused
     return payload
 
 
+def builtin_voice_to_vo(voice: dict[str, Any]) -> dict[str, Any]:
+    voice_id = str(voice.get("voiceId") or "")
+    reference_path = builtin_reference_path(voice)
+    prompt_text = str(voice.get("promptText") or "").strip()
+    return {
+        "voiceId": voice_id,
+        "name": voice.get("name"),
+        "type": "builtin",
+        "engine": "cosyvoice",
+        "source": "builtin",
+        "materialId": None,
+        "materialKey": None,
+        "status": "ready" if reference_path.exists() and prompt_text else "not_configured",
+        "errorType": "" if reference_path.exists() and prompt_text else "cosyvoice_builtin_voice_not_configured",
+        "errorReason": "" if reference_path.exists() and prompt_text else "builtin_reference_or_prompt_missing",
+        "previewUrl": f"/api/v1/voices/{voice_id}/preview",
+        "referenceAudioUrl": f"/api/v1/voices/{voice_id}/reference.wav" if reference_path.exists() else "",
+        "promptTextConfigured": bool(prompt_text),
+        "duration": None,
+        "sampleRate": voice.get("sampleRate"),
+        "channels": None,
+        "codec": None,
+        "validation": {},
+        "quality": {"ok": True, "warnings": []},
+        "referenceExtraction": {},
+        "createdAt": voice.get("createdAt"),
+        "updatedAt": voice.get("updatedAt"),
+        "lastUsedAt": voice.get("lastUsedAt"),
+    }
+
+
 def list_voice_profiles() -> dict[str, list[dict[str, Any]]]:
-    custom_voices: list[dict[str, Any]] = []
+    voices_by_id: dict[str, dict[str, Any]] = {}
     for path in sorted(VOICES_ROOT.glob("voice_*/voice.json")):
         try:
-            profile = read_json(path)
-            custom_voices.append(voice_profile_to_vo(profile))
+            profile = persist_voice_profile_validation(read_json(path))
+            payload = voice_profile_to_vo(profile)
+            voice_id = str(payload.get("voiceId") or "")
+            if voice_id:
+                voices_by_id[voice_id] = payload
             upsert_voice_index(profile)
         except Exception:
             logger.warning("skip invalid voice profile: %s", path, exc_info=True)
-    builtin = [
-        {"voiceId": voice["voiceId"], "name": voice["name"], "type": "builtin", "status": "ready"}
-        for voice in BUILTIN_VOICES
-    ]
-    return {"voices": [*builtin, *custom_voices]}
+    return {"voices": list(voices_by_id.values())}
+
+
+def get_voice_profile(voice_id: str) -> dict[str, Any]:
+    normalized = normalize_voice_id(voice_id)
+    builtin = get_builtin_voice(normalized)
+    if builtin:
+        return builtin_voice_to_vo(builtin)
+    return voice_profile_to_vo(persist_voice_profile_validation(read_voice_profile(normalized)))
+
+
+def update_voice_profile(*, voice_id: str, name: str) -> dict[str, Any]:
+    normalized = normalize_voice_id(voice_id)
+    if get_builtin_voice(normalized):
+        raise AppException(
+            error_code.BAD_REQUEST,
+            "内置音色不可修改。",
+            data={"errorType": "builtin_voice_readonly", "voiceId": normalized},
+            status_code=400,
+        )
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise AppException(
+            error_code.BAD_REQUEST,
+            "音色名称不能为空。",
+            data={"errorType": "voice_name_required", "voiceId": normalized},
+            status_code=400,
+        )
+    profile = read_voice_profile(normalized)
+    profile["name"] = clean_name
+    profile["updatedAt"] = now()
+    write_json(voice_json_path(normalized), profile)
+    upsert_voice_index(profile)
+    return voice_profile_to_vo(profile)
+
+
+def delete_voice_profile(voice_id: str) -> dict[str, Any]:
+    normalized = normalize_voice_id(voice_id)
+    if get_builtin_voice(normalized):
+        raise AppException(
+            error_code.BAD_REQUEST,
+            "内置音色不可删除。",
+            data={"errorType": "builtin_voice_readonly", "voiceId": normalized},
+            status_code=400,
+        )
+    path = voice_json_path(normalized)
+    if not path.exists():
+        raise AppException(
+            error_code.NOT_FOUND,
+            "音色不存在。",
+            data={"errorType": "voice_not_found", "voiceId": normalized},
+            status_code=404,
+        )
+    shutil.rmtree(voice_dir(normalized), ignore_errors=True)
+    remove_voice_index_entry(normalized)
+    return {"voiceId": normalized, "deleted": True}
+
+
+def raise_invalid_voice_profile(profile: dict[str, Any], validation: dict[str, Any]) -> None:
+    voice_id = str(profile.get("voiceId") or "")
+    error_type = str(validation.get("errorType") or "voice_profile_invalid")
+    reason = str(validation.get("reason") or error_type)
+    message = "当前音色配置无效，请重新创建音色。"
+    status_code = 400
+    code = error_code.BAD_REQUEST
+    if error_type == "reference_audio_missing":
+        message = "当前音色缺少参考音频，请重新创建音色。"
+        status_code = 500
+        code = error_code.INTERNAL_ERROR
+    elif error_type == "prompt_text_mismatch":
+        message = "当前音色参考文本与参考音频不匹配，请重新创建音色。"
+    raise AppException(
+        code,
+        message,
+        data={
+            "errorType": error_type,
+            "reason": reason,
+            "voiceId": voice_id,
+            "status": profile.get("status"),
+            "validation": validation,
+        },
+        status_code=status_code,
+    )
 
 
 def resolve_voice_for_synthesis(voice_id: str | None) -> dict[str, Any]:
     normalized = normalize_voice_id(voice_id)
     builtin = get_builtin_voice(normalized)
     if builtin:
+        reference_path = builtin_reference_path(builtin)
+        prompt_text = str(builtin.get("promptText") or "").strip()
+        if not reference_path.exists() or not prompt_text:
+            raise AppException(
+                error_code.INTERNAL_ERROR,
+                "当前内置音色未配置完成。",
+                data={
+                    "errorType": "cosyvoice_builtin_voice_not_configured",
+                    "voiceId": builtin["voiceId"],
+                    "referenceAudioPath": _relative_runtime_path(reference_path),
+                    "promptTextConfigured": bool(prompt_text),
+                },
+                status_code=500,
+            )
         return {
             "voiceId": builtin["voiceId"],
             "name": builtin["name"],
             "type": "builtin",
-            "mossVoice": builtin["mossVoice"],
-            "promptAudioPath": "",
-            "voiceMode": "preset",
+            "engine": "cosyvoice",
+            "promptAudioPath": str(reference_path),
+            "promptText": prompt_text,
+            "voiceMode": "clone",
         }
-    profile = read_voice_profile(normalized)
-    if not current_tts_supports_custom_voice():
-        raise AppException(
-            error_code.INTERNAL_ERROR,
-            "当前 TTS 引擎暂不支持自定义音色，请先使用内置音色。",
-            data={"errorType": "custom_voice_not_supported", "voiceId": normalized},
-            status_code=500,
-        )
-    if profile.get("status") != "ready":
-        raise AppException(
-            error_code.BAD_REQUEST,
-            "音色尚未创建完成，请稍后再试。",
-            data={"errorType": "voice_not_ready", "voiceId": normalized},
-            status_code=400,
-        )
-    reference_path = voice_dir(normalized) / "reference.wav"
-    if not reference_path.exists():
-        raise AppException(
-            error_code.INTERNAL_ERROR,
-            "自定义音色缺少参考音频，请重新创建音色。",
-            data={"errorType": "voice_reference_missing", "voiceId": normalized},
-            status_code=500,
-        )
+    profile = persist_voice_profile_validation(read_voice_profile(normalized))
+    validation = profile.get("validation") or validate_voice_profile(profile)
+    if profile.get("status") != "ready" or not validation.get("ok"):
+        raise_invalid_voice_profile(profile, validation)
+    reference_path = _profile_reference_path(profile)
+    prompt_text = str(profile.get("promptText") or "").strip()
     return {
         "voiceId": normalized,
         "name": profile.get("name"),
         "type": "custom",
-        "mossVoice": "Junhao",
+        "engine": "cosyvoice",
         "promptAudioPath": str(reference_path),
+        "promptText": prompt_text,
         "voiceMode": "clone",
     }
 
@@ -844,22 +1235,31 @@ def create_voice_preview(*, voice_id: str, text: str) -> dict[str, Any]:
     if len(clean_text) > 160:
         clean_text = clean_text[:160]
 
-    root = voice_dir(voice["voiceId"]) if voice["type"] == "custom" else VOICES_ROOT / "_builtin_previews" / voice["voiceId"]
+    root = voice_dir(voice["voiceId"]) if voice["type"] == "custom" else builtin_voice_dir(voice["voiceId"])
     root.mkdir(parents=True, exist_ok=True)
-    text_path = root / "preview_text.txt"
     output_path = root / "preview.wav"
-    text_path.write_text(clean_text, encoding="utf-8")
+    health = cosyvoice_engine.health()
+    if not health.get("available"):
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "CosyVoice 未就绪，请先完成模型配置。",
+            data={
+                "errorType": "cosyvoice_not_ready",
+                "reason": health.get("errorType") or "cosyvoice_not_ready",
+                "modelDir": health.get("modelDir"),
+            },
+            status_code=500,
+        )
 
     try:
-        moss_tts_client.generate(
-            text_path=text_path,
-            output_path=output_path,
-            prompt_audio_path=Path(voice["promptAudioPath"]) if voice["promptAudioPath"] else None,
-            execution_provider=get_moss_tts_execution_provider(),
-            voice=voice["mossVoice"],
-            model_dir=None,
-            on_log=lambda line: logger.info("voice preview %s: %s", voice["voiceId"], line.strip()),
+        cosyvoice_engine.synthesize(
+            text=clean_text,
+            output_path=str(output_path),
+            reference_audio_path=voice["promptAudioPath"],
+            prompt_text=voice["promptText"],
         )
+    except AppException:
+        raise
     except Exception as exc:
         logger.exception("voice preview failed")
         raise AppException(
@@ -880,13 +1280,12 @@ def get_voice_file(voice_id: str, filename: str) -> Path:
     if filename not in {"preview.wav", "reference.wav"}:
         raise HTTPException(status_code=404, detail="音色文件不存在")
     builtin = get_builtin_voice(normalized)
-    if filename == "reference.wav" and builtin:
-        raise HTTPException(status_code=404, detail="音色文件不存在")
-    path = (
-        VOICES_ROOT / "_builtin_previews" / normalized / "preview.wav"
-        if builtin
-        else voice_dir(normalized) / filename
-    )
+    if builtin and filename == "reference.wav":
+        path = builtin_reference_path(builtin)
+    elif builtin:
+        path = builtin_voice_dir(normalized) / "preview.wav"
+    else:
+        path = voice_dir(normalized) / filename
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="音色文件不存在")
     return path

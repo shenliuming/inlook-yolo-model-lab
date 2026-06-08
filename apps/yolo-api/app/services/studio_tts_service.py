@@ -11,7 +11,6 @@ from typing import Any
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 
 from app.config.paths import STUDIO_TTS_TRAINING_RUNTIME_DIR
-from app.config.settings import get_tts_engine
 from app.services.tts_service import create_tts_task, get_tts_task
 from app.services.voice_profile_service import list_voice_profiles, resolve_voice_for_synthesis
 from app.utils.file_utils import safe_filename
@@ -211,13 +210,14 @@ def create_tts_synthesis(
     prompt_audio_path = ""
     resolved_voice_mode = voice_mode
     builtin_voice = None
+    prompt_text = None
     resolved_voice_id = voice_id
     if voice_id:
         voice = resolve_voice_for_synthesis(voice_id)
         resolved_voice_id = voice["voiceId"]
         prompt_audio_path = voice["promptAudioPath"]
         resolved_voice_mode = voice["voiceMode"]
-        builtin_voice = voice["mossVoice"]
+        prompt_text = voice.get("promptText")
     elif training_id:
         training = read_training(training_id)
         if training.get("status") != "success":
@@ -225,7 +225,6 @@ def create_tts_synthesis(
         prompt_audio_path = str(training_dir(training_id) / "inputs" / "reference.wav")
         resolved_voice_mode = "clone"
         resolved_voice_id = training_id
-        builtin_voice = "Junhao"
     elif voice_mode == "clone":
         raise HTTPException(status_code=400, detail="克隆模式需要先创建音色训练")
 
@@ -234,13 +233,14 @@ def create_tts_synthesis(
         text=text,
         voice_mode=resolved_voice_mode,
         language=language,
-        engine=get_tts_engine(),
+        engine="cosyvoice",
         backend="onnx",
         execution_provider=execution_provider,
         prompt_audio=None,
         prompt_audio_path=prompt_audio_path,
         text_file=None,
         builtin_voice=builtin_voice,
+        prompt_text=prompt_text,
     )
     return {
         "synthesisId": task["task_id"],
@@ -268,6 +268,8 @@ def get_tts_synthesis(synthesis_id: str) -> dict[str, Any]:
         "taskId": synthesis_id,
         "status": task.get("status"),
         "message": task.get("message"),
+        "errorType": task.get("error_type"),
+        "reason": task.get("reason"),
         "audioUrl": task.get("audio_url"),
         "downloads": task.get("downloads") or {},
         "createdAt": task.get("created_at"),

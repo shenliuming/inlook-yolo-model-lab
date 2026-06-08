@@ -4,6 +4,7 @@ import importlib.util
 import json
 import logging
 import re
+import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -13,8 +14,10 @@ from app.common import error_code
 from app.common.exceptions import AppException
 from app.config.settings import (
     get_cosyvoice_device,
+    get_cosyvoice_matcha_dir,
     get_cosyvoice_model_dir,
     get_cosyvoice_sample_rate,
+    get_cosyvoice_source_dir,
     get_whisper_beam_size,
     get_whisper_compute_type,
     get_whisper_device,
@@ -30,6 +33,14 @@ MIN_REFERENCE_SECONDS = 10.0
 LOW_MEAN_VOLUME_DB = -45.0
 LOW_MAX_VOLUME_DB = -35.0
 SHORT_TEXT_MAX_CHARS = 120
+
+
+def configure_cosyvoice_import_path() -> None:
+    for path in (get_cosyvoice_source_dir(), get_cosyvoice_matcha_dir()):
+        if path and path.exists() and path.is_dir():
+            path_text = str(path)
+            if path_text not in sys.path:
+                sys.path.insert(0, path_text)
 
 
 @dataclass
@@ -55,6 +66,7 @@ class CosyVoiceEngine:
         device: str | None = None,
         sample_rate: int | None = None,
     ) -> None:
+        configure_cosyvoice_import_path()
         self.model_dir = Path(model_dir).expanduser().resolve() if model_dir else get_cosyvoice_model_dir()
         self.device = (device or get_cosyvoice_device()).strip().lower() or "auto"
         self.sample_rate = sample_rate or get_cosyvoice_sample_rate()
@@ -62,6 +74,7 @@ class CosyVoiceEngine:
         self._cosyvoice_class: Any | None = None
         self._load_wav: Any | None = None
         self._torchaudio: Any | None = None
+        self._torch: Any | None = None
 
     def health(self) -> dict[str, Any]:
         installed = self._cosyvoice_installed()
@@ -103,7 +116,14 @@ class CosyVoiceEngine:
 
         target_output = Path(output_path).expanduser().resolve()
         target_output.parent.mkdir(parents=True, exist_ok=True)
+        segments_dir = target_output.parent / "segments"
+        segments_dir.mkdir(parents=True, exist_ok=True)
+        for old_segment in segments_dir.glob("segment_*.wav"):
+            old_segment.unlink(missing_ok=True)
         model = self._load_model()
+        source_reference_path = (
+            str(Path(reference_audio_path).expanduser().resolve()) if reference_audio_path else ""
+        )
 
         reference_wav: Path | None = None
         resolved_prompt_text = (prompt_text or "").strip()
@@ -122,9 +142,20 @@ class CosyVoiceEngine:
                     )
 
             chunks = split_tts_text(clean_text)
+            logger.info(
+                "cosyvoice tts request textLength=%s segmentCount=%s",
+                len(clean_text),
+                len(chunks),
+            )
+            for index, chunk in enumerate(chunks, 1):
+                logger.info(
+                    "cosyvoice tts segment index=%s charCount=%s",
+                    index,
+                    len(chunk),
+                )
             segment_outputs: list[Path] = []
             for index, chunk in enumerate(chunks, 1):
-                segment_path = temp_root / f"segment_{index:03d}.wav"
+                segment_path = segments_dir / f"segment_{index:03d}.wav"
                 if reference_wav is not None:
                     self._synthesize_zero_shot_chunk(
                         model=model,
@@ -153,12 +184,17 @@ class CosyVoiceEngine:
             outputPath=str(target_output),
             sampleRate=self.sample_rate,
             segments=[
-                {"index": index, "text": chunk, "charCount": len(chunk)}
+                {
+                    "index": index,
+                    "text": chunk,
+                    "charCount": len(chunk),
+                    "outputPath": str(segments_dir / f"segment_{index:03d}.wav"),
+                }
                 for index, chunk in enumerate(chunks, 1)
             ],
             modelDir=str(self.model_dir),
             promptText=resolved_prompt_text,
-            referenceAudioPath=str(reference_wav) if reference_wav else "",
+            referenceAudioPath=source_reference_path,
         )
 
     def normalize_reference_audio(self, source_path: str | Path, destination_path: str | Path) -> Path:
@@ -227,11 +263,12 @@ class CosyVoiceEngine:
         )
 
     def _ensure_imports(self) -> None:
-        if self._cosyvoice_class and self._load_wav and self._torchaudio:
+        if self._cosyvoice_class and self._load_wav and self._torchaudio and self._torch:
             return
         try:
             from cosyvoice.cli.cosyvoice import CosyVoice2  # type: ignore
             from cosyvoice.utils.file_utils import load_wav  # type: ignore
+            import torch  # type: ignore
             import torchaudio  # type: ignore
         except ImportError as exc:
             raise AppException(
@@ -243,6 +280,7 @@ class CosyVoiceEngine:
         self._cosyvoice_class = CosyVoice2
         self._load_wav = load_wav
         self._torchaudio = torchaudio
+        self._torch = torch
 
     def _load_model(self) -> Any:
         if self._model is not None:
@@ -294,24 +332,22 @@ class CosyVoiceEngine:
                 data={"errorType": "reference_audio_required"},
                 status_code=400,
             )
-        # Official CosyVoice2 zero-shot examples load prompt speech at 16 kHz.
-        # The file itself is normalized to COSYVOICE_SAMPLE_RATE first, then resampled by load_wav.
-        prompt_speech_16k = self._load_wav(str(reference_wav), 16000)
         try:
-            generated_any = False
+            speeches = []
+            sample_rate = int(getattr(model, "sample_rate", self.sample_rate))
             for index, result in enumerate(
-                model.inference_zero_shot(text, prompt_text, prompt_speech_16k, stream=False),
+                model.inference_zero_shot(text, prompt_text, str(reference_wav), stream=False),
                 1,
             ):
                 speech = result.get("tts_speech") if isinstance(result, dict) else None
                 if speech is None:
                     continue
-                self._torchaudio.save(str(output_path), speech, int(getattr(model, "sample_rate", self.sample_rate)))
-                generated_any = True
-                if index >= 1:
-                    break
-            if not generated_any or not output_path.exists():
+                speeches.append(speech)
+            if not speeches:
                 raise RuntimeError("CosyVoice 没有返回有效音频")
+            self._save_speech(output_path, speeches, sample_rate)
+            if not output_path.exists():
+                raise RuntimeError("CosyVoice 没有写入输出音频")
         except AppException:
             raise
         except Exception as exc:
@@ -333,23 +369,24 @@ class CosyVoiceEngine:
         if not hasattr(model, "inference_sft"):
             raise AppException(
                 error_code.INTERNAL_ERROR,
-                "当前 CosyVoice 模型未提供内置音色，请创建自定义音色或设置 TTS_ENGINE=moss。",
+                "当前 CosyVoice 模型未提供可用内置音色，请配置 CosyVoice 音色参考音频。",
                 data={"errorType": "cosyvoice_builtin_voice_not_supported", "modelDir": str(self.model_dir)},
                 status_code=500,
             )
         resolved_speaker = self._resolve_speaker_id(model, speaker_id)
         try:
-            generated_any = False
+            speeches = []
+            sample_rate = int(getattr(model, "sample_rate", self.sample_rate))
             for index, result in enumerate(model.inference_sft(text, resolved_speaker, stream=False), 1):
                 speech = result.get("tts_speech") if isinstance(result, dict) else None
                 if speech is None:
                     continue
-                self._torchaudio.save(str(output_path), speech, int(getattr(model, "sample_rate", self.sample_rate)))
-                generated_any = True
-                if index >= 1:
-                    break
-            if not generated_any or not output_path.exists():
+                speeches.append(speech)
+            if not speeches:
                 raise RuntimeError("CosyVoice preset 没有返回有效音频")
+            self._save_speech(output_path, speeches, sample_rate)
+            if not output_path.exists():
+                raise RuntimeError("CosyVoice preset 没有写入输出音频")
         except AppException:
             raise
         except Exception as exc:
@@ -362,6 +399,16 @@ class CosyVoiceEngine:
                 },
                 status_code=500,
             ) from exc
+
+    def _save_speech(self, output_path: Path, speeches: list[Any], sample_rate: int) -> None:
+        speech = speeches[0] if len(speeches) == 1 else self._torch.cat(speeches, dim=-1)
+        self._torchaudio.save(
+            str(output_path),
+            speech,
+            sample_rate,
+            encoding="PCM_S",
+            bits_per_sample=16,
+        )
 
     def _resolve_speaker_id(self, model: Any, speaker_id: str | None) -> str:
         configured = (speaker_id or "").strip()
@@ -382,7 +429,7 @@ class CosyVoiceEngine:
             return speakers[0]
         raise AppException(
             error_code.INTERNAL_ERROR,
-            "当前 CosyVoice 模型没有可用内置音色，请创建自定义音色或设置 TTS_ENGINE=moss。",
+            "当前 CosyVoice 模型没有可用内置音色，请配置 CosyVoice 音色参考音频。",
             data={
                 "errorType": "cosyvoice_builtin_voice_not_supported",
                 "requestedSpeakerId": configured,
@@ -418,6 +465,21 @@ class CosyVoiceEngine:
 
 
 def split_tts_text(text: str) -> list[str]:
+    raw_text = (text or "").strip()
+    if not raw_text:
+        return []
+    normalized = re.sub(r"[ \t\r\f\v]+", " ", raw_text)
+    explicit_blocks = [block.strip() for block in re.split(r"\n+", normalized) if block.strip()]
+    if len(explicit_blocks) > 1:
+        chunks: list[str] = []
+        for block in explicit_blocks:
+            chunks.extend(_split_text_block(block))
+        return [chunk for chunk in chunks if chunk]
+    normalized = explicit_blocks[0] if explicit_blocks else normalized.strip()
+    return _split_text_block(normalized)
+
+
+def _split_text_block(text: str) -> list[str]:
     normalized = re.sub(r"\s+", " ", (text or "").strip())
     if not normalized:
         return []
@@ -438,6 +500,9 @@ def split_tts_text(text: str) -> list[str]:
             current = f"{current}{sentence}" if current else sentence
     if current:
         chunks.append(current)
+    if len(chunks) >= 2 and len(chunks[-1]) < 25 and len(chunks[-2]) + len(chunks[-1]) <= SHORT_TEXT_MAX_CHARS:
+        chunks[-2] = f"{chunks[-2]}{chunks[-1]}"
+        chunks.pop()
     return [chunk for chunk in chunks if chunk]
 
 
@@ -479,8 +544,13 @@ def concat_wavs(segment_paths: list[Path], output_path: Path) -> None:
             "0",
             "-i",
             str(list_path),
-            "-c",
-            "copy",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            str(get_cosyvoice_sample_rate()),
+            "-acodec",
+            "pcm_s16le",
             str(output_path),
         ]
     )

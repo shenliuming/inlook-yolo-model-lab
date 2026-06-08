@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Deprecated MOSS-TTS client.
+
+INLOOK Studio TTS synthesis is routed exclusively through CosyVoice. This file
+is retained only for historical reference and must not be imported by the main
+Studio TTS flow.
+"""
+
 import importlib.util
 import json
 import os

@@ -23,7 +23,7 @@ async def create_tts(
     text: str = Form(default=""),
     voiceMode: str = Form(default="clone"),
     language: str = Form(default="zh"),
-    engine: str = Form(default="moss-tts-nano"),
+    engine: str = Form(default="cosyvoice"),
     backend: str = Form(default="onnx"),
     executionProvider: str = Form(default="cpu"),
     promptAudio: UploadFile | None = File(default=None),

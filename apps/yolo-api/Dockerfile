@@ -24,12 +24,13 @@ RUN pip install -r requirements.txt
 
 COPY apps/yolo-api/app.py ./app.py
 COPY apps/yolo-api/app ./app
-COPY third_party/MOSS-TTS-Nano ./third_party/MOSS-TTS-Nano
 
-ENV MOSS_TTS_REPO_DIR=/app/third_party/MOSS-TTS-Nano \
-    MOSS_TTS_MODEL_DIR=/app/third_party/MOSS-TTS-Nano/models
+ENV TTS_ENGINE=cosyvoice \
+    COSYVOICE_MODEL_DIR=/app/pretrained_models/CosyVoice2-0.5B \
+    COSYVOICE_DEVICE=auto \
+    COSYVOICE_SAMPLE_RATE=24000
 
-RUN mkdir -p /app/models/official /app/models/inlook /app/uploads /app/outputs /app/reports /app/runtime /app/third_party/MOSS-TTS-Nano
+RUN mkdir -p /app/models/official /app/models/inlook /app/uploads /app/outputs /app/reports /app/runtime /app/pretrained_models
 
 EXPOSE 8000
 

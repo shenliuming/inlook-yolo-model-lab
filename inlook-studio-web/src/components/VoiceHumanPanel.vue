@@ -216,10 +216,11 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
           </div>
 
           <label class="field">
-            <span class="field-label">TTS 声音</span>
+            <span class="field-label">音色</span>
             <select class="select-input" :value="selectedVoiceId" @change="$emit('update:selectedVoiceId', $event.target.value)">
+              <option v-if="!voices.length" value="" disabled>暂无可用音色</option>
               <option v-for="voice in voices" :key="voice.voiceId" :value="voice.voiceId">
-                {{ voice.name }}{{ voice.type === 'custom' ? ' · 我的音色' : '' }}
+                {{ voice.name }}
               </option>
             </select>
           </label>

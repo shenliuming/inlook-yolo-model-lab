@@ -24,7 +24,6 @@ export const promptTemplates = [
 export const platformOptions = ['抖音', '视频号', '小红书', 'B站']
 export const lengthOptions = ['150字', '300字', '500字', '自定义']
 export const toneOptions = ['真实自然', '直接', '温和', '专业', '接地气']
-export const voiceOptions = ['磁性男声', '温柔女声', '知识老师', '普通人口播']
 export const emotionOptions = ['真诚自然', '轻松分享', '专业讲解', '克制表达']
 export const subtitleStyles = ['简约白底黑字', '灰底圆角字幕', '专业知识字幕']
 export const subtitlePositions = ['底部居中', '底部偏上', '上方标题位']

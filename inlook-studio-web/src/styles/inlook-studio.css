@@ -1456,6 +1456,82 @@ button {
   gap: 6px;
 }
 
+.voice-library {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.voice-library__empty {
+  align-items: flex-start;
+  padding: 22px;
+}
+
+.voice-library__empty p {
+  margin: 6px 0 10px;
+  color: var(--muted);
+}
+
+.voice-library__table {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.voice-library__head,
+.voice-library__row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) 80px 110px 110px 100px 150px 150px minmax(320px, 1.8fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.voice-library__head {
+  padding: 12px 14px;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.voice-library__row {
+  padding: 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.voice-library__row:last-child {
+  border-bottom: 0;
+}
+
+.voice-library__row--empty {
+  display: block;
+  color: var(--muted);
+}
+
+.voice-library__row strong {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.voice-library__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.voice-library__audio {
+  width: 180px;
+  height: 34px;
+}
+
+.voice-library__name-input {
+  min-height: 34px;
+  margin-bottom: 8px;
+}
+
 @keyframes wave {
   0%,
   100% {
