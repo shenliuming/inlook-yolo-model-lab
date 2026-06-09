@@ -1,0 +1,23 @@
+# example_yolo_api_env_windows.txt
+
+# ========================================================
+# INLOOK Studio Windows Environment Configuration Template
+# ========================================================
+# Save this file as `apps/yolo-api/.env.local`
+# Do NOT commit `.env.local` to Git.
+
+# LLM Configuration (DeepSeek or OpenAI Compatible)
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://api.deepseek.com
+LLM_API_KEY=your_real_api_key_here
+LLM_MODEL=deepseek-chat
+
+# TTS Engine Configuration
+TTS_ENGINE=cosyvoice
+# Note: Use forward slashes or double backslashes in Python .env paths on Windows
+COSYVOICE_MODEL_DIR=D:/Models/CosyVoice2-0.5B
+COSYVOICE_DEVICE=auto
+COSYVOICE_SAMPLE_RATE=24000
+
+# Security (Optional for Local POC)
+# INLOOK_API_KEY=your_internal_secret_key
