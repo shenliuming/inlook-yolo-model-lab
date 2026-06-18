@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.services import digital_human_poc_service
-from app.services.digital_human_service import _project_audio_relative_path
+from app.services.digital_human.task_service import _project_audio_relative_path
 
 
 def test_project_audio_relative_path_supports_absolute_project_file_url() -> None:

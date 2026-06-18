@@ -14,11 +14,7 @@ from app.dto.material_dto import MaterialExtractRequestDTO
 from app.dto.studio_dto import TtsSynthesisCreateRequestDTO
 from app.dto.studio_project_dto import StudioProjectTranscriptionRequestDTO
 from app.services.copy_rewrite_service import rewrite_copy
-from app.services.digital_human_service import (
-    complete_project_digital_human_task,
-    create_project_digital_human_task,
-    get_project_digital_human_task,
-)
+from app.services.digital_human.task_service import queue_video_task, read_video_task, run_video_task
 from app.services.material_service import (
     extract_material,
     material_json_path,
@@ -32,7 +28,6 @@ from app.services.project_runtime_service import (
     now,
     project_copywriting_dir,
     project_current_material_dir,
-    project_digital_human_task_dir,
     project_file_url,
     project_subtitles_dir,
     project_transcription_dir,
@@ -336,12 +331,23 @@ def studio_create_digital_human_task(
     background_tasks: BackgroundTasks,
     request: DigitalHumanGenerateRequestDTO,
 ) -> dict[str, Any]:
-    result = create_project_digital_human_task(project_id=project_id, request=request)
-    task_id = str(result.get("taskId") or "").strip()
-    if task_id and str(result.get("status") or "") == "running":
-        background_tasks.add_task(complete_project_digital_human_task, project_id, task_id)
-    return result
+    payload = request.model_dump()
+    payload["projectId"] = project_id
+    if not payload.get("workflowId"):
+        payload["workflowId"] = project_id
+    task = queue_video_task(DigitalHumanGenerateRequestDTO(**payload))
+    task_id = str(task.get("taskId") or "").strip()
+    if task_id:
+        background_tasks.add_task(run_video_task, task_id)
+    return {
+        "taskId": task_id,
+        "status": task.get("status") or "queued",
+        "progress": task.get("progress") or 0,
+    }
 
 
 def studio_get_digital_human_task(project_id: str, task_id: str) -> dict[str, Any]:
-    return get_project_digital_human_task(project_id, task_id)
+    task = read_video_task(task_id)
+    if project_id and task.get("projectId") and task["projectId"] != project_id:
+        raise HTTPException(status_code=404, detail="数字人任务不存在")
+    return task
