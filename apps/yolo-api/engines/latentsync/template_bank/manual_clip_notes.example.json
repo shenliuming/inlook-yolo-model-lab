@@ -1,0 +1,20 @@
+{
+  "clips": [
+    {
+      "clip_id": "clip_001",
+      "content_hint": "正脸讲解，轻微手势，适合开场或普通解释",
+      "motion_hint": "双手在胸前轻微移动，头部稳定",
+      "tags": ["neutral", "gesture", "good_for_explain"],
+      "usable": true,
+      "manual_note": "可复用"
+    },
+    {
+      "clip_id": "clip_002",
+      "content_hint": "动作和 clip_001 高度相似，不建议连续使用",
+      "motion_hint": "延续上一段动作",
+      "tags": ["neutral", "overlap_with_previous"],
+      "usable": true,
+      "manual_note": "可作为 clip_001 的备选，但不要连续拼接"
+    }
+  ]
+}

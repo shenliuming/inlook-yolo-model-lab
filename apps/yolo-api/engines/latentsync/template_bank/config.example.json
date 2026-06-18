@@ -1,0 +1,13 @@
+{
+  "runtime_dir": "apps/yolo-api/runtime/template_bank",
+  "template_video": "input/template.mp4",
+  "narration_audio": "input/narration.wav",
+  "segment_length": 5,
+  "step": 2,
+  "min_duration": 3,
+  "max_output_duration": 60,
+  "prefer_encoder": "libx264",
+  "fallback_encoder": "mpeg4",
+  "selected_clips": "input/selected_clips.json",
+  "output_video": "output/prepared_template.mp4"
+}

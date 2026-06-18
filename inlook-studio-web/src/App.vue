@@ -5,27 +5,34 @@ import StudioSidebar from './components/StudioSidebar.vue'
 import MaterialScriptPanel from './components/MaterialScriptPanel.vue'
 import PromptRewritePanel from './components/PromptRewritePanel.vue'
 import VoiceHumanPanel from './components/VoiceHumanPanel.vue'
+import ChanjingDigitalHumanManager from './components/digital-human/ChanjingDigitalHumanManager.vue'
 import VoiceLibraryView from './components/VoiceLibraryView.vue'
 import ExportPanel from './components/ExportPanel.vue'
 import VideoPreviewPanel from './components/VideoPreviewPanel.vue'
 import RecentTaskTable from './components/RecentTaskTable.vue'
 import { clearBrowserAuth, getBrowserAuthStatus, startBrowserAuth } from './api/browserAuth'
-import { extractMaterial, uploadMaterial } from './api/materials'
-import { createTranscription } from './api/transcriptions'
-import { listTasks } from './api/tasks'
 import {
-  createSynthesis,
   createVoiceFromMaterial,
   createVoicePreview,
   createVoiceProfile,
   deleteVoiceProfile,
-  getSynthesis,
   listVoiceProfiles,
   updateVoiceProfile,
 } from './api/tts'
-import { getAiStatus, rewriteCopy } from './api/ai'
+import { getAiStatus } from './api/ai'
 import { apiUrl } from './api/client'
-import { generateDigitalHumanVideo } from './api/digitalHuman'
+import { generateDigitalHumanVideo, getDigitalHumanTask } from './api/digitalHuman'
+import {
+  createStudioProject,
+  createStudioSynthesis,
+  createStudioTranscription,
+  extractStudioMaterial,
+  getStudioProject,
+  getStudioSynthesis,
+  listStudioTasks,
+  rewriteStudioCopy,
+  uploadStudioMaterial,
+} from './api/studio'
 import {
   aspectOptions,
   avatarOptions,
@@ -101,7 +108,7 @@ const voiceGenerating = ref(false)
 const humanGenerating = ref(false)
 const creatingVoiceFromMaterial = ref(false)
 const voiceStatus = ref('待生成')
-const humanStatus = ref('数字人待接入')
+const humanStatus = ref('未生成数字人视频')
 const trainingStatus = ref('未创建音色')
 const voiceCreateDialogVisible = ref(false)
 const voiceCreateLoading = ref(false)
@@ -121,6 +128,8 @@ const voiceLibraryPreviewVoiceId = ref('')
 const selectedAvatarId = ref(avatarOptions[0].id)
 const selectedScene = ref(sceneOptions[0])
 const selectedBackground = ref(backgroundOptions[0])
+const selectedDigitalHumanPerson = ref(null)
+const studioDigitalHumanOutputPath = ref('')
 
 const subtitleEnabled = ref(true)
 const selectedSubtitleStyle = ref(subtitleStyles[0])
@@ -181,6 +190,7 @@ const renderingMeta = ref({
 let taskPollTimer = null
 let trainingPollTimer = null
 let synthesisPollTimer = null
+let digitalHumanPollTimer = null
 const authPollTimers = {
   douyin: null,
   bilibili: null,
@@ -284,23 +294,43 @@ const projectStepStatus = computed(() => ({
   scriptReady: Boolean(currentProject.value.currentScript?.trim()),
   audioReady: Boolean(currentProject.value.currentAudio?.audioUrl),
   subtitleReady: Boolean(currentProject.value.subtitles || subtitleDownloads.value.srt || subtitleDownloads.value.vtt),
-  avatarReady: Boolean(selectedAvatarId.value),
+  avatarReady: Boolean(selectedDigitalHumanPerson.value?.templateId),
   exportReady: Boolean(currentProject.value.currentAudio?.audioUrl),
 }))
 
-const canGenerateAvatarVideo = computed(
-  () =>
-    Boolean(currentProject.value.currentScript?.trim()) &&
-    Boolean(currentProject.value.currentAudio?.audioUrl) &&
-    Boolean(selectedAvatarId.value),
+const studioDigitalHumanBackendReady = computed(() => true)
+
+const studioDigitalHumanDisplayName = computed(
+  () => selectedDigitalHumanPerson.value?.name || selectedDigitalHumanPerson.value?.templateId || '',
 )
 
-const humanGenerateHint = computed(() => {
-  if (!currentProject.value.currentScript?.trim()) return '请先输入或选择一版成片文案。'
+const canGenerateStudioDigitalHuman = computed(
+  () =>
+    Boolean(currentProject.value.currentAudio?.audioUrl) &&
+    Boolean(selectedDigitalHumanPerson.value?.templateId) &&
+    studioDigitalHumanBackendReady.value,
+)
+
+const studioDigitalHumanHint = computed(() => {
   if (!currentProject.value.currentAudio?.audioUrl) return '请先生成配音。'
-  if (!selectedAvatarId.value) return '请先选择数字人形象。'
-  return `已准备：${currentProject.value.currentScriptTitle || '当前文案'} · ${selectedAvatar.value?.name || '数字人'}`
+  if (!selectedDigitalHumanPerson.value?.templateId) return '请先选择数字人。'
+  return `已准备：${currentProject.value.currentScriptTitle || '当前配音'} · ${studioDigitalHumanDisplayName.value}`
 })
+
+const studioDigitalHumanStatus = computed(() => {
+  if (humanGenerating.value) return humanStatus.value || '数字人视频生成中'
+  if (currentProject.value.digitalHumanVideo?.videoUrl) return humanStatus.value || '数字人视频已生成'
+  if (humanStatus.value && ['缺少配音', '未选择数字人'].includes(humanStatus.value)) return humanStatus.value
+  if (!selectedDigitalHumanPerson.value?.templateId) return '未选择数字人'
+  if (!currentProject.value.currentAudio?.audioUrl) return `已选择 ${studioDigitalHumanDisplayName.value}，待配音`
+  return humanStatus.value || `已选择 ${studioDigitalHumanDisplayName.value}`
+})
+
+const studioDigitalHumanMissingCapabilityHint = computed(() =>
+  studioDigitalHumanBackendReady.value
+    ? ''
+    : '',
+)
 
 const resetCurrentProject = (overrides = {}) => {
   currentProject.value = {
@@ -308,6 +338,20 @@ const resetCurrentProject = (overrides = {}) => {
     selectedVoiceType: selectedVoice.value?.type || '',
     selectedAvatarName: selectedAvatar.value?.name || '',
     ...overrides,
+  }
+}
+
+const clearProjectDigitalHumanOutput = () => {
+  currentProject.value.digitalHumanVideo = null
+  studioDigitalHumanOutputPath.value = ''
+  if (currentProject.value.previewVideo?.type === 'digital_human') {
+    currentProject.value.previewVideo = currentProject.value.material?.localVideoUrl
+      ? {
+          type: 'material',
+          url: currentProject.value.material.localVideoUrl,
+          title: currentProject.value.material.title || '素材视频',
+        }
+      : null
   }
 }
 
@@ -321,6 +365,7 @@ const setProjectMaterial = (nextMaterial) => {
         title: nextMaterial.title || '素材视频',
       }
     : null
+  clearProjectDigitalHumanOutput()
 }
 
 const setProjectOriginalText = (text, source) => {
@@ -353,8 +398,9 @@ const clearProjectCurrentScript = () => {
   currentProject.value.currentScriptTitle = ''
   currentProject.value.selectedRewriteVersionId = null
   currentProject.value.currentAudio = null
-  currentProject.value.digitalHumanVideo = null
+  clearProjectDigitalHumanOutput()
   voiceStatus.value = '待生成'
+  humanStatus.value = '未生成数字人视频'
 }
 
 const setProjectCurrentScript = ({ text, source, title, activeResult = '' }) => {
@@ -370,8 +416,9 @@ const setProjectCurrentScript = ({ text, source, title, activeResult = '' }) => 
   currentProject.value.currentScriptTitle = currentScriptTitle.value
   currentProject.value.selectedRewriteVersionId = source === 'rewrite_version' ? activeResult || null : null
   currentProject.value.currentAudio = null
-  currentProject.value.digitalHumanVideo = null
+  clearProjectDigitalHumanOutput()
   voiceStatus.value = `已选择 ${currentScriptTitle.value}`
+  humanStatus.value = '未生成数字人视频'
 }
 
 const setProjectCurrentAudio = (audioResult) => {
@@ -402,10 +449,11 @@ watch(
     currentProject.value.selectedVoiceType = voiceType
     if (previousVoiceId && previousVoiceId !== voiceId && currentProject.value.currentAudio) {
       currentProject.value.currentAudio = null
-      currentProject.value.digitalHumanVideo = null
+      clearProjectDigitalHumanOutput()
       synthesisAudioUrl.value = ''
       synthesisId.value = ''
       voiceStatus.value = '音色已切换，请重新生成配音'
+      humanStatus.value = '未生成数字人视频'
     }
   },
   { immediate: true },
@@ -643,12 +691,14 @@ const handleRawScriptInput = (value) => {
 
 const fetchTasks = async () => {
   try {
-    const list = await listTasks()
+    const list = await listStudioTasks()
     const taskNameMap = {
       'material.fetch': '素材读取',
       'transcription.extract': '视频文案提取',
       'tts.synthesis': '语音合成',
       'tts.training': '音色训练',
+      'copy.rewrite': '文案改写',
+      'digital_human.generate': '数字人任务',
     }
     const statusLabelMap = {
       success: '成功',
@@ -912,6 +962,20 @@ const loadAllAuthStatuses = async () => {
   }
 }
 
+const ensureStudioProjectId = async () => {
+  const existingId = String(currentProject.value.projectId || '').trim()
+  if (existingId) return existingId
+  const project = await createStudioProject({ name: currentProjectTitle.value || 'Studio 项目' })
+  currentProject.value.projectId = project.projectId
+  return project.projectId
+}
+
+const startFreshStudioProject = async () => {
+  const project = await createStudioProject({ name: 'Studio 项目' })
+  currentProject.value.projectId = project.projectId
+  return project.projectId
+}
+
 const handleStartAuth = async (platform) => {
   appError.value = ''
   try {
@@ -940,6 +1004,7 @@ const handleClearAuth = async (platform) => {
 
 const handleFileSelected = async (file) => {
   const requestSeqSnapshot = nextRequestSeq()
+  const projectId = await ensureStudioProjectId()
   uploadedFile.value = file
   uploadedFileName.value = file.name
   currentNormalizedUrl.value = ''
@@ -957,7 +1022,7 @@ const handleFileSelected = async (file) => {
   try {
     const formData = new FormData()
     formData.append('file', file)
-    const payload = await uploadMaterial(formData)
+    const payload = await uploadStudioMaterial(projectId, formData)
     if (!isCurrentRequest(requestSeqSnapshot)) return
     applyMaterial(normalizeMaterial(payload))
   } catch (error) {
@@ -1013,9 +1078,13 @@ const handleManualInput = () => {
   renderingMeta.value.finalDuration = '--:--'
   readStatus.value = '当前模式：手动文案'
   appError.value = ''
+  startFreshStudioProject().catch((error) => {
+    setGlobalErrorFromException(error, '创建新项目失败，请稍后重试。')
+  })
 }
 
 const readMaterial = async ({ rawInput, extractedLinks, primaryLink, requestSeqSnapshot }) => {
+  const projectId = await ensureStudioProjectId()
   appError.value = ''
   material.value = null
   materialId.value = ''
@@ -1045,7 +1114,7 @@ const readMaterial = async ({ rawInput, extractedLinks, primaryLink, requestSeqS
       url: primaryLink.normalizedUrl,
       sourceType: detectedSourceType,
     })
-    const payload = await extractMaterial({
+    const payload = await extractStudioMaterial(projectId, {
       sourceType: detectedSourceType,
       input: rawInput,
       url: primaryLink.normalizedUrl,
@@ -1088,6 +1157,7 @@ const formatDuration = (seconds) => {
 }
 
 const extractCurrentMaterialScript = async (targetMaterial, requestSeqSnapshot) => {
+  const projectId = await ensureStudioProjectId()
   const targetMaterialId = targetMaterial?.materialId || ''
   if (!targetMaterialId) {
     appError.value = '请先完成素材导入。'
@@ -1105,7 +1175,7 @@ const extractCurrentMaterialScript = async (targetMaterial, requestSeqSnapshot) 
       materialId: targetMaterialId,
       sourceUrl: targetMaterial.normalizedUrl || targetMaterial.sourceUrl || '',
     })
-    const task = await createTranscription({
+    const task = await createStudioTranscription(projectId, {
       materialId: targetMaterialId,
       model: 'medium',
       language: 'zh',
@@ -1267,6 +1337,7 @@ const loadVoices = async () => {
 }
 
 const runRewrite = async (options = {}) => {
+  const projectId = await ensureStudioProjectId()
   if (!aiRewriteAvailable.value) {
     appError.value = aiUnavailableMessage.value
     return
@@ -1285,7 +1356,7 @@ const runRewrite = async (options = {}) => {
   isRewriting.value = true
   appError.value = ''
   try {
-    const payload = await rewriteCopy({
+    const payload = await rewriteStudioCopy(projectId, {
       sourceText,
       sourceTextType,
       allowPlatformText,
@@ -1464,6 +1535,7 @@ const createVoiceFromCurrentMaterial = async () => {
 }
 
 const generateVoice = async () => {
+  const projectId = await ensureStudioProjectId()
   const displayedScriptText = currentProject.value.currentScript || ''
   const scriptText = activeTtsText.value
   if (!scriptText.trim()) {
@@ -1477,6 +1549,7 @@ const generateVoice = async () => {
   voiceGenerating.value = true
   voiceStatus.value = '配音任务创建中'
   currentProject.value.currentAudio = null
+  clearProjectDigitalHumanOutput()
   synthesisAudioUrl.value = ''
   try {
     const requestPayload = {
@@ -1508,13 +1581,13 @@ const generateVoice = async () => {
         selectedVoiceType: selectedVoice.value?.type || 'unknown',
       })
     }
-    const synthesis = await createSynthesis(requestPayload)
+    const synthesis = await createStudioSynthesis(projectId, requestPayload)
     synthesisId.value = synthesis.synthesisId
     voiceStatus.value = synthesis.message || '配音任务已创建'
     await fetchTasks()
     synthesisPollTimer = window.setInterval(async () => {
       try {
-        const latest = await getSynthesis(synthesis.synthesisId)
+        const latest = await getStudioSynthesis(projectId, synthesis.synthesisId)
         voiceStatus.value = latest.message || latest.status
         if (latest.audioUrl) {
           synthesisAudioUrl.value = apiUrl(latest.audioUrl)
@@ -1553,54 +1626,114 @@ const generateVoice = async () => {
   }
 }
 
-const generateHumanVideo = async () => {
-  const scriptText = currentProject.value.currentScript || ''
-  const currentAudio = currentProject.value.currentAudio
-  if (!scriptText.trim()) {
-    humanStatus.value = '缺少成片文案'
-    appError.value = '请先输入或选择一版成片文案。'
-    return
+const openDigitalHumanManager = () => {
+  activeNav.value = 'human'
+  currentView.value = 'digitalHuman'
+}
+
+const handleSelectDigitalHumanPerson = (person) => {
+  selectedDigitalHumanPerson.value = person || null
+  currentProject.value.selectedAvatarName = person?.name || person?.templateId || ''
+  if (!currentProject.value.digitalHumanVideo) {
+    humanStatus.value = person?.templateId ? `已选择 ${person.name || person.templateId}` : '未选择数字人'
   }
+}
+
+const stopDigitalHumanPolling = () => {
+  if (digitalHumanPollTimer) {
+    window.clearInterval(digitalHumanPollTimer)
+    digitalHumanPollTimer = null
+  }
+}
+
+const normalizeProjectVideoUrl = (value) => {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  return raw.startsWith('http://') || raw.startsWith('https://') ? raw : apiUrl(raw)
+}
+
+const applyDigitalHumanTaskResult = async (projectId, task) => {
+  if (task?.status === 'success') humanStatus.value = '数字人视频已生成'
+  else if (task?.status === 'failed') humanStatus.value = task?.errorMessage || '数字人视频生成失败'
+  else humanStatus.value = '数字人任务处理中'
+  const localVideoUrl = normalizeProjectVideoUrl(task?.videoUrl)
+  if (localVideoUrl) {
+    const projectSnapshot = await getStudioProject(projectId)
+    currentProject.value.projectId = projectSnapshot.projectId || currentProject.value.projectId
+    currentProject.value.digitalHumanVideo = {
+      taskId: task.taskId,
+      videoUrl: localVideoUrl,
+      remoteVideoUrl: '',
+      localOutputPath: '',
+      previewUrl: task.coverUrl || '',
+      personId: task.templateId || selectedDigitalHumanPerson.value?.templateId || '',
+      status: task.status || 'success',
+    }
+    studioDigitalHumanOutputPath.value = task.downloads?.video || ''
+    currentProject.value.previewVideo = {
+      type: 'digital_human',
+      url: localVideoUrl,
+      title: currentProject.value.currentScriptTitle || '数字人口播',
+    }
+  }
+}
+
+const generateStudioDigitalHumanFromCurrentAudio = async () => {
+  const projectId = await ensureStudioProjectId()
+  const currentAudio = currentProject.value.currentAudio
+  const person = selectedDigitalHumanPerson.value
   if (!currentAudio?.audioUrl) {
     humanStatus.value = '缺少配音'
     appError.value = '请先生成配音。'
     return
   }
-  if (!selectedAvatarId.value) {
+  if (!person?.templateId) {
     humanStatus.value = '未选择数字人'
-    appError.value = '请先选择数字人形象。'
+    appError.value = '请先选择数字人。'
     return
   }
+
   humanGenerating.value = true
   humanStatus.value = '数字人任务创建中'
   appError.value = ''
-  const payload = {
-    script: scriptText,
-    audioId: currentAudio.audioId || currentAudio.synthesisId || '',
-    audioUrl: currentAudio.audioUrl,
-    avatarId: selectedAvatarId.value,
-    mode: 'talking_head',
-  }
+  clearProjectDigitalHumanOutput()
+  stopDigitalHumanPolling()
+
   try {
-    console.info('[StudioAlpha] digital_human_generate', {
-      avatarId: payload.avatarId,
-      audioId: payload.audioId,
-      scriptLength: payload.script.length,
-      scriptPreview: payload.script.slice(0, 60),
+    const task = await generateDigitalHumanVideo({
+      templateId: person.templateId,
+      script: currentProject.value.currentScript || '',
+      audioTaskId: currentAudio.audioId || currentAudio.synthesisId || '',
+      audioUrl: currentAudio.audioUrl,
+      workflowId: projectId,
+      projectId,
+      mode: 'auto',
     })
-    const result = await generateDigitalHumanVideo(payload)
-    if (result?.videoUrl) {
-      currentProject.value.previewVideo = {
-        type: 'digital_human',
-        url: result.videoUrl,
-        title: currentProject.value.currentScriptTitle || '数字人口播',
-      }
-      humanStatus.value = result.message || '数字人任务已创建'
+    await fetchTasks()
+    await applyDigitalHumanTaskResult(projectId, task)
+    const taskId = task?.taskId
+    if (!taskId) {
+      humanGenerating.value = false
+      return
     }
+    digitalHumanPollTimer = window.setInterval(async () => {
+      try {
+        const latest = await getDigitalHumanTask(taskId)
+        await applyDigitalHumanTaskResult(projectId, latest)
+        if (latest?.status === 'success' || latest?.status === 'failed') {
+          humanGenerating.value = false
+          stopDigitalHumanPolling()
+        }
+      } catch (error) {
+        humanStatus.value = normalizeUiErrorMessage(error, '数字人任务状态获取失败。')
+        appError.value = humanStatus.value
+        humanGenerating.value = false
+        stopDigitalHumanPolling()
+      }
+    }, 5000)
   } catch (error) {
-    humanStatus.value = normalizeUiErrorMessage(error, '数字人引擎暂未接入。')
-    setGlobalErrorFromException(error, '数字人引擎暂未接入。')
-  } finally {
+    humanStatus.value = normalizeUiErrorMessage(error, '数字人任务创建失败。')
+    appError.value = humanStatus.value
     humanGenerating.value = false
   }
 }
@@ -1627,6 +1760,10 @@ const handleSidebarSelect = (navId) => {
   if (navId === 'voice') {
     currentView.value = 'voices'
     loadVoices()
+    return
+  }
+  if (navId === 'human') {
+    currentView.value = 'digitalHuman'
     return
   }
   currentView.value = 'workbench'
@@ -1725,12 +1862,20 @@ onMounted(() => {
   loadVoices()
   startTaskPolling()
   loadAllAuthStatuses()
+  createStudioProject({ name: 'Studio 项目' })
+    .then((project) => {
+      currentProject.value.projectId = project.projectId
+    })
+    .catch(() => {
+      // ignore bootstrap failure here, later actions will retry
+    })
 })
 
 onBeforeUnmount(() => {
   stopTaskPolling()
   if (trainingPollTimer) window.clearInterval(trainingPollTimer)
   if (synthesisPollTimer) window.clearInterval(synthesisPollTimer)
+  stopDigitalHumanPolling()
   stopAuthPolling('douyin')
   stopAuthPolling('bilibili')
 })
@@ -1765,6 +1910,16 @@ onBeforeUnmount(() => {
           @rename-voice="renameVoiceFromLibrary"
           @delete-voice="deleteVoiceFromLibrary"
           @preview-voice="previewVoiceFromLibrary"
+        />
+
+        <ChanjingDigitalHumanManager
+          v-else-if="currentView === 'digitalHuman'"
+          :selected-person="selectedDigitalHumanPerson"
+          :current-audio="currentProject.currentAudio"
+          :current-script="currentProject.currentScript"
+          :current-script-title="currentProject.currentScriptTitle"
+          @return-workbench="returnToWorkbench"
+          @select-person="handleSelectDigitalHumanPerson"
         />
 
         <template v-else>
@@ -1834,7 +1989,7 @@ onBeforeUnmount(() => {
             :voice-generating="voiceGenerating"
             :human-generating="humanGenerating"
             :voice-status="voiceStatus"
-            :human-status="humanStatus"
+            :human-status="studioDigitalHumanStatus"
             :training-status="trainingStatus"
             :can-create-voice-from-material="currentMaterialLocalReady"
             :creating-voice-from-material="creatingVoiceFromMaterial"
@@ -1853,11 +2008,17 @@ onBeforeUnmount(() => {
             :current-script-source="currentProject.currentScriptSource"
             :current-script-title="currentProject.currentScriptTitle"
             :current-audio="currentProject.currentAudio"
-            :can-generate-human-video="canGenerateAvatarVideo"
-            :human-generate-hint="humanGenerateHint"
+            :can-generate-human-video="canGenerateStudioDigitalHuman"
+            :human-generate-hint="studioDigitalHumanHint"
+            :selected-digital-human-person="selectedDigitalHumanPerson"
+            :studio-digital-human-output-path="studioDigitalHumanOutputPath"
+            :can-generate-studio-digital-human="canGenerateStudioDigitalHuman"
+            :studio-digital-human-backend-ready="studioDigitalHumanBackendReady"
+            :studio-digital-human-missing-capability-hint="studioDigitalHumanMissingCapabilityHint"
             @preview-voice="previewVoice"
             @generate-voice="generateVoice"
-            @generate-human-video="generateHumanVideo"
+            @open-digital-human-manager="openDigitalHumanManager"
+            @generate-studio-digital-human="generateStudioDigitalHumanFromCurrentAudio"
             @open-voice-create="openVoiceCreateDialog"
             @create-voice-from-material="createVoiceFromCurrentMaterial"
             @close-voice-create="closeVoiceCreateDialog"

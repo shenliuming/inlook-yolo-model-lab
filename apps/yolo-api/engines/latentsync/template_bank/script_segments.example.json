@@ -1,0 +1,22 @@
+{
+  "segments": [
+    {
+      "segment_id": "seg_001",
+      "text": "今天我想结合这么些年的经验，给大家分享一下现在怎么选方向才能好就业。",
+      "duration": 4.8,
+      "type": "intro",
+      "emotion": "confident",
+      "need_gesture": true,
+      "preferred_tags": ["neutral", "gesture", "good_for_explain"]
+    },
+    {
+      "segment_id": "seg_002",
+      "text": "我先逆着说，先说说哪些方向不能选。",
+      "duration": 3.5,
+      "type": "transition",
+      "emotion": "serious",
+      "need_gesture": true,
+      "preferred_tags": ["neutral", "gesture", "serious"]
+    }
+  ]
+}

@@ -78,3 +78,15 @@ apps/yolo-api/models/**/*.pt
 # Imported integration source snapshots
 inlook_content_intake_web/
 integrations/
+
+# local inference / CoreML / ONNX cache
+.caches/
+**/.caches/
+
+.env
+.env.*
+!.env.example
+
+apps/yolo-api/.env.local
+apps/yolo-api/.env
+!apps/yolo-api/.env.example

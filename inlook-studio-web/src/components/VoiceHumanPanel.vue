@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import StudioDigitalHumanCard from './studio/StudioDigitalHumanCard.vue'
 
 const props = defineProps({
   voices: {
@@ -150,6 +151,26 @@ const props = defineProps({
     type: String,
     default: '请先输入或选择一版成片文案。',
   },
+  selectedDigitalHumanPerson: {
+    type: Object,
+    default: null,
+  },
+  studioDigitalHumanOutputPath: {
+    type: String,
+    default: '',
+  },
+  canGenerateStudioDigitalHuman: {
+    type: Boolean,
+    default: false,
+  },
+  studioDigitalHumanBackendReady: {
+    type: Boolean,
+    default: false,
+  },
+  studioDigitalHumanMissingCapabilityHint: {
+    type: String,
+    default: '',
+  },
 })
 
 defineEmits([
@@ -162,7 +183,8 @@ defineEmits([
   'update:selectedBackground',
   'preview-voice',
   'generate-voice',
-  'generate-human-video',
+  'generate-studio-digital-human',
+  'open-digital-human-manager',
   'open-voice-create',
   'create-voice-from-material',
   'close-voice-create',
@@ -182,7 +204,7 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
     <div class="panel-header">
       <div>
         <h2>3. 配音与数字人</h2>
-        <p>先模拟完整交互，后续再接真实引擎。</p>
+        <p>先生成配音，再选择数字人模板输出口播视频。</p>
       </div>
     </div>
 
@@ -355,55 +377,18 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
           <span class="field-label">数字人</span>
           <span class="field-meta">{{ humanStatus }}</span>
         </div>
-
-        <div class="avatar-grid">
-          <button
-            v-for="avatar in avatars"
-            :key="avatar.id"
-            type="button"
-            class="avatar-card"
-            :class="{ 'avatar-card--active': avatar.id === selectedAvatarId }"
-            @click="$emit('update:selectedAvatarId', avatar.id)"
-          >
-            <div class="avatar-card__visual" :style="{ background: avatar.accent }">
-              <div class="avatar-silhouette"></div>
-            </div>
-            <div class="avatar-card__meta">
-              <strong>{{ avatar.name }}</strong>
-              <span>{{ avatar.role }}</span>
-            </div>
-          </button>
-        </div>
-
-        <div class="control-grid">
-          <label class="field">
-            <span class="field-label">出镜比例</span>
-            <select class="select-input" :value="selectedScene" @change="$emit('update:selectedScene', $event.target.value)">
-              <option v-for="item in sceneOptions" :key="item" :value="item">{{ item }}</option>
-            </select>
-          </label>
-
-          <label class="field">
-            <span class="field-label">背景选择</span>
-            <select class="select-input" :value="selectedBackground" @change="$emit('update:selectedBackground', $event.target.value)">
-              <option v-for="background in backgroundOptions" :key="background" :value="background">{{ background }}</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="info-block">
-          <span>数字人输入：文案 {{ hasCurrentScript ? '已选择' : '未选择' }} · 配音 {{ hasCurrentAudio ? '已生成' : '未生成' }}</span>
-          <span>{{ humanGenerateHint }}</span>
-        </div>
-
-        <button
-          class="primary-button primary-button--full"
-          type="button"
-          :disabled="humanGenerating || !canGenerateHumanVideo"
-          @click="$emit('generate-human-video')"
-        >
-          {{ humanGenerating ? '生成中...' : canGenerateHumanVideo ? '生成数字人口播视频' : '数字人待准备' }}
-        </button>
+        <StudioDigitalHumanCard
+          :selected-person="selectedDigitalHumanPerson"
+          :status="humanStatus"
+          :output-path="studioDigitalHumanOutputPath"
+          :can-generate="canGenerateStudioDigitalHuman"
+          :generating="humanGenerating"
+          :generate-hint="humanGenerateHint"
+          :backend-ready="studioDigitalHumanBackendReady"
+          :missing-capability-hint="studioDigitalHumanMissingCapabilityHint"
+          @open-manager="$emit('open-digital-human-manager')"
+          @generate="$emit('generate-studio-digital-human')"
+        />
       </div>
     </div>
   </section>

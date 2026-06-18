@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from app.config.paths import CONTENT_LAB_TTS_RUNTIME_DIR, STUDIO_TRANSCRIPTION_RUNTIME_DIR, STUDIO_TTS_TRAINING_RUNTIME_DIR
+from app.services.digital_human.task_repository import list_workflow_tasks
 
 LEGACY_MATERIAL_ROOT = Path(__file__).resolve().parent.parent.parent / "runtime" / "content_workflow" / "material_intake" / "tasks"
 
@@ -119,6 +120,27 @@ def list_tasks(limit: int = 50) -> list[dict[str, Any]]:
             task = _generic_task_from_dir(task_dir, "tts.synthesis")
             if task:
                 tasks.append(task)
+
+    for task in list_workflow_tasks(task_type="digital_human.generate"):
+        tasks.append(
+            {
+                "taskId": task.get("task_id") or "",
+                "taskType": "digital_human.generate",
+                "sourceType": task.get("source_type") or "",
+                "status": _normalize_status(str(task.get("status") or "queued")),
+                "stage": "数字人生成",
+                "progress": int(task.get("progress") or 0),
+                "input": {},
+                "outputs": {
+                    "videoUrl": str((task.get("outputs") or {}).get("videoUrl") or ""),
+                    "downloads": (task.get("outputs") or {}).get("downloads") or {},
+                    "templateId": str((task.get("outputs") or {}).get("templateId") or ""),
+                },
+                "errorMessage": str(task.get("error_message") or ""),
+                "createdAt": task.get("created_at"),
+                "updatedAt": task.get("updated_at"),
+            }
+        )
 
     tasks.sort(key=lambda item: item.get("createdAt") or "", reverse=True)
     return tasks[:limit]

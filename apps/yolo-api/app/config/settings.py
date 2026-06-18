@@ -122,6 +122,68 @@ def get_content_lab_runtime_relative_dir() -> Path:
     return Path(configured)
 
 
+def get_chanjing_app_id() -> str:
+    return os.getenv("CHANJING_APP_ID", "").strip()
+
+
+def get_chanjing_secret_key() -> str:
+    return os.getenv("CHANJING_SECRET_KEY", "").strip()
+
+
+def get_chanjing_api_base_url() -> str:
+    return os.getenv("CHANJING_API_BASE_URL", "https://open-api.chanjing.cc").strip() or "https://open-api.chanjing.cc"
+
+
+def get_chanjing_api_base_path() -> str:
+    return os.getenv("CHANJING_API_BASE_PATH", "/open/v1").strip() or "/open/v1"
+
+
+def get_chanjing_access_token_header() -> str:
+    return os.getenv("CHANJING_ACCESS_TOKEN_HEADER", "access_token").strip() or "access_token"
+
+
+def get_chanjing_open_api_base_url() -> str:
+    return os.getenv("CHANJING_OPEN_API_BASE_URL", "https://open-api.chanjing.cc").strip() or "https://open-api.chanjing.cc"
+
+
+def get_chanjing_default_model() -> int:
+    raw = os.getenv("CHANJING_DEFAULT_MODEL", "0").strip() or "0"
+    try:
+        return int(raw)
+    except ValueError:
+        return 0
+
+
+def get_chanjing_default_screen_width() -> int:
+    raw = os.getenv("CHANJING_DEFAULT_SCREEN_WIDTH", "1080").strip() or "1080"
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1080
+
+
+def get_chanjing_default_screen_height() -> int:
+    raw = os.getenv("CHANJING_DEFAULT_SCREEN_HEIGHT", "1920").strip() or "1920"
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1920
+
+
+def get_chanjing_token_expire_margin_seconds() -> int:
+    raw = os.getenv("CHANJING_TOKEN_EXPIRE_MARGIN_SECONDS", "300").strip() or "300"
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 300
+
+
+def get_chanjing_audio_upload_services() -> list[str]:
+    raw = os.getenv("CHANJING_AUDIO_UPLOAD_SERVICES", "audio,video").strip() or "audio,video"
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return values or ["audio", "video"]
+
+
 def get_asr_provider() -> str:
     return os.getenv("ASR_PROVIDER", "faster_whisper").strip().lower() or "faster_whisper"
 
