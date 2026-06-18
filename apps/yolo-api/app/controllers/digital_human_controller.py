@@ -4,14 +4,13 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile
 
 from app.common.result import success
 from app.dto.digital_human_dto import DigitalHumanGenerateRequestDTO
-from app.services.digital_human.task_service import read_video_task, read_video_tasks, run_video_task
+from app.services.digital_human.task_service import queue_video_task, read_video_task, read_video_tasks, run_video_task
 from app.services.digital_human.template_service import (
     complete_template_import,
     create_template_import,
     read_templates,
     sync_remote_templates,
 )
-from app.services.digital_human_service import create_digital_human_video
 
 router = APIRouter(prefix="/api/v1/digital-human", tags=["digital-human"])
 
@@ -23,7 +22,6 @@ def list_digital_human_templates():
 
 @router.post("/templates/import")
 async def import_digital_human_template(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     name: str = Form(...),
     trainingType: str = Form("full"),
@@ -36,8 +34,7 @@ async def import_digital_human_template(
         training_type=trainingType,
         resolution_label=resolution,
     )
-    background_tasks.add_task(complete_template_import, payload["templateId"])
-    return success(payload)
+    return success(complete_template_import(payload["templateId"]))
 
 
 @router.post("/templates/sync")
@@ -57,6 +54,12 @@ def get_digital_human_video_task(task_id: str):
 
 @router.post("/generate")
 def generate_digital_human_video(request: DigitalHumanGenerateRequestDTO, background_tasks: BackgroundTasks):
-    task = create_digital_human_video(request)
+    task = queue_video_task(request)
     background_tasks.add_task(run_video_task, task["taskId"])
-    return success(task)
+    return success(
+        {
+            "taskId": task["taskId"],
+            "status": task["status"],
+            "progress": task["progress"],
+        }
+    )

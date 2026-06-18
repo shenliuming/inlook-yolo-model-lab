@@ -9,7 +9,7 @@ from app.common.logging import setup_logging
 from app.config.cors import build_cors_config
 from app.config.paths import OUTPUTS_DIR, REPORTS_DIR, ensure_runtime_directories
 from app.config.settings import get_yolo_config_dir
-from app.services.studio_db import init_database as init_studio_alpha_database
+from app.services.studio_db import init_database
 from app.controllers.ai_controller import router as ai_router
 from app.controllers.content_lab_controller import router as content_lab_router
 from app.controllers.browser_auth_controller import router as browser_auth_router
@@ -30,9 +30,8 @@ from app.controllers.vision_controller import router as vision_router
 setup_logging()
 get_yolo_config_dir()
 ensure_runtime_directories()
-init_studio_alpha_database()
 try:
-    from app.db.database import init_database
+    from app.db.database import init_database as init_legacy_database
     from app.db.repositories import seed_default_digital_human_settings
     from app.config.settings import (
         get_chanjing_default_model,
@@ -40,7 +39,7 @@ try:
         get_chanjing_default_screen_width,
     )
 
-    if init_database():
+    if init_legacy_database():
         try:
             seed_default_digital_human_settings(
                 {
@@ -56,6 +55,13 @@ except Exception:
     pass
 
 app = FastAPI(title="INLOOK AI 工作台 Backend")
+
+
+@app.on_event("startup")
+def startup_event():
+    init_database()
+
+
 app.add_middleware(CORSMiddleware, **build_cors_config())
 register_exception_handlers(app)
 
