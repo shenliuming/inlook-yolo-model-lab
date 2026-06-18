@@ -73,6 +73,23 @@ const formatDateTime = (value) => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+const formatDuration = (template) => {
+  const value = Number(template?.duration || template?.durationSeconds || template?.durationSec || 0)
+  if (!value) return '--'
+  const minutes = Math.floor(value / 60)
+  const seconds = Math.round(value % 60)
+  if (!minutes) return `${seconds}s`
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+}
+
+const sourceLabel = (template) => (template?.source === 'remote_provider' ? '远程模板库' : '本地模板')
+
+const resolutionLabel = (template) => {
+  if (template?.resolutionLabel) return template.resolutionLabel
+  if (template?.width && template?.height) return `${template.width} × ${template.height}`
+  return '--'
+}
+
 const stopTemplatePolling = () => {
   if (templatePollTimer) {
     window.clearInterval(templatePollTimer)
@@ -290,27 +307,29 @@ onBeforeUnmount(() => {
           <div class="status status--warning">暂无数字人模板，请导入本地模板或同步远程模板库。</div>
         </div>
 
-        <div v-else class="digital-human-card-grid">
-          <article v-for="template in templates" :key="template.templateId" class="digital-human-card" :class="{ 'digital-human-card--selected': selectedTemplate?.templateId === template.templateId }">
+        <div v-else class="digital-human-card-grid digital-human-card-grid--compact">
+          <article
+            v-for="template in templates"
+            :key="template.templateId"
+            class="digital-human-card digital-human-card--compact"
+            :class="{ 'digital-human-card--selected': selectedTemplate?.templateId === template.templateId }"
+          >
             <div class="digital-human-card__media">
               <img v-if="template.coverUrl" :src="template.coverUrl" :alt="template.name" />
               <video v-else-if="template.previewUrl" :src="template.previewUrl" muted playsinline preload="metadata"></video>
               <div v-else class="digital-human-card__placeholder">模板</div>
             </div>
             <div class="digital-human-card__body">
-              <div class="field-headline">
-                <span class="field-label">{{ template.name }}</span>
-                <span class="field-meta">{{ template.status === 'ready' ? '可用' : template.status === 'failed' ? '失败' : '训练中' }}</span>
-              </div>
-              <div class="info-block">
-                <span>来源：{{ template.sourceLabel }}</span>
-                <span>分辨率：{{ template.width || '--' }} x {{ template.height || '--' }}</span>
-                <span>时间：{{ formatDateTime(template.updatedAt || template.createdAt) }}</span>
-                <span v-if="template.errorMessage" class="helper-text--warning">{{ template.errorMessage }}</span>
+              <strong class="digital-human-card__title">{{ template.name }}</strong>
+              <div class="digital-human-card__meta">
+                <span>来源：{{ sourceLabel(template) }}</span>
+                <span>时长：{{ formatDuration(template) }}</span>
+                <span>分辨率：{{ resolutionLabel(template) }}</span>
               </div>
               <div class="button-row">
-                <button class="secondary-button" type="button" @click="chooseTemplate(template)">选择模板</button>
-                <a v-if="template.previewUrl" class="secondary-button secondary-button--link" :href="template.previewUrl" target="_blank" rel="noreferrer">播放预览</a>
+                <button class="secondary-button secondary-button--small" type="button" @click="chooseTemplate(template)">
+                  {{ selectedTemplate?.templateId === template.templateId ? '已选择' : '选择模板' }}
+                </button>
               </div>
             </div>
           </article>
@@ -339,9 +358,13 @@ onBeforeUnmount(() => {
         <div class="sub-panel">
           <div class="field-headline">
             <span class="field-label">生成面板</span>
-            <span class="field-meta">{{ generationHint }}</span>
+            <span class="field-meta">资产中心可直接发起生成，但主入口已在工作台。</span>
           </div>
           <div class="stack-md">
+            <div class="info-block">
+              <span>{{ generationHint }}</span>
+              <span>当前工作台已有文案和配音时，推荐回到工作台直接生成。</span>
+            </div>
             <textarea v-model="generationText" class="text-area" rows="5" placeholder="输入要生成的数字人口播文案。"></textarea>
             <div class="button-row">
               <button class="secondary-button" type="button" @click="useCurrentScript">使用当前文案</button>
@@ -358,8 +381,8 @@ onBeforeUnmount(() => {
             <span class="field-meta">{{ loadingTasks ? '加载中' : `${tasks.length} 条记录` }}</span>
           </div>
           <p v-if="!loadingTasks && !tasks.length" class="helper-text">暂无生成视频。选择模板并发起生成后，成片会出现在这里。</p>
-          <div v-else class="digital-human-card-grid">
-            <article v-for="task in tasks" :key="task.taskId" class="digital-human-card">
+          <div v-else class="digital-human-card-grid digital-human-card-grid--compact">
+            <article v-for="task in tasks" :key="task.taskId" class="digital-human-card digital-human-card--compact">
               <div class="digital-human-card__media">
                 <video v-if="task.videoUrl" :src="apiUrl(task.videoUrl)" controls preload="metadata"></video>
                 <img v-else-if="task.coverUrl" :src="task.coverUrl" :alt="task.templateName" />
@@ -387,7 +410,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="showImportDialog" class="voice-dialog-overlay">
+    <div v-if="showImportDialog" class="voice-dialog-backdrop">
       <div class="voice-dialog voice-dialog--wide">
         <div class="voice-dialog__header">
           <div>

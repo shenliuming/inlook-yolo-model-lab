@@ -63,6 +63,10 @@ def project_tts_synthesis_dir(project_id: str, synthesis_id: str) -> Path:
     return project_tts_dir(project_id) / "synthesis" / synthesis_id
 
 
+def project_voice_uploads_dir(project_id: str) -> Path:
+    return project_tts_dir(project_id) / "uploads"
+
+
 def project_subtitles_dir(project_id: str) -> Path:
     return project_dir(project_id) / "subtitles"
 

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from app.clients.browser_client import browser_client
 from app.clients.ffmpeg_client import ffmpeg_client
 from app.common import error_code
 from app.common.exceptions import AppException
-from app.tasks.task_store import append_log, material_inputs_dir, material_json_path, read_material, write_material
+from app.services.browser_auth_service import mark_platform_authorization_expired
+from app.tasks.task_store import append_log, material_cache_dir, material_inputs_dir, material_json_path, read_material, write_material
 
 MIN_VIDEO_SIZE_BYTES = 10 * 1024
 
@@ -121,6 +125,149 @@ def _build_failure_data(material_id: str, material: dict[str, Any], tried_source
     }
 
 
+def _raise_bilibili_download_error(message: str, *, material_id: str, source_url: str) -> None:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    if "412" in lowered:
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "网络或风控导致 412，请稍后重试。",
+            status_code=500,
+            data={"errorType": "bilibili_http_412", "materialId": material_id, "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    if "login required" in lowered or "需要登录" in text:
+        mark_platform_authorization_expired("bilibili", "B站授权已过期，请重新授权后再读取素材。")
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "B站授权已过期，请重新授权后再读取素材。",
+            status_code=400,
+            data={"errorType": "platform_auth_expired", "materialId": material_id, "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    if "not found" in lowered or "unable to download webpage" in lowered or "视频不存在" in text:
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "视频不存在或不可访问。",
+            status_code=404,
+            data={"errorType": "bilibili_not_found", "materialId": material_id, "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    if "extractorerror" in lowered or "extractor error" in lowered or "no module named yt_dlp" in lowered:
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "解析失败，请更新 yt-dlp。",
+            status_code=500,
+            data={"errorType": "bilibili_extractor_error", "materialId": material_id, "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    raise AppException(
+        error_code.INTERNAL_ERROR,
+        "素材下载失败，请稍后重试。",
+        status_code=500,
+        data={"errorType": "material_download_failed", "materialId": material_id, "sourceType": "bilibili", "sourceUrl": source_url},
+    )
+
+
+def _find_downloaded_video(work_dir: Path) -> Path | None:
+    candidates: list[Path] = []
+    for ext in ("mp4", "mkv", "webm", "mov", "m4v", "flv"):
+        candidates.extend(work_dir.glob(f"source.{ext}"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_size)
+
+
+def _download_bilibili_video(material_id: str, material: dict[str, Any]) -> dict[str, Any]:
+    source_url = str(material.get("canonicalUrl") or material.get("sourceUrl") or "").strip()
+    cookie_path = material_cache_dir(material_id) / "bilibili.cookies.txt"
+    cookie_count = browser_client.export_netscape_cookies("bilibili", cookie_path)
+    if cookie_count <= 0:
+        mark_platform_authorization_expired("bilibili", "B站授权已过期，请重新授权后再读取素材。")
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "B站授权已过期，请重新授权后再读取素材。",
+            status_code=400,
+            data={"errorType": "platform_auth_expired", "materialId": material_id, "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+
+    source_path = _local_video_path(material_id)
+    work_dir = source_path.parent
+    out_template = str(work_dir / "source.%(ext)s")
+    cmd = [
+        shutil.which("python3") or "python3",
+        "-m",
+        "yt_dlp",
+        "--no-playlist",
+        "--cookies",
+        str(cookie_path),
+        "--merge-output-format",
+        "mp4",
+        "-o",
+        out_template,
+        source_url,
+    ]
+    append_log(material_id, f"[DOWNLOAD_ENGINE] yt_dlp cookies={cookie_count}")
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or exc.stdout or str(exc)).strip()
+        append_log(material_id, f"[BILIBILI_DOWNLOAD_ERROR] {stderr}")
+        _raise_bilibili_download_error(stderr, material_id=material_id, source_url=source_url)
+    except Exception as exc:
+        append_log(material_id, f"[BILIBILI_DOWNLOAD_EXCEPTION] {exc}")
+        _raise_bilibili_download_error(str(exc), material_id=material_id, source_url=source_url)
+
+    downloaded = _find_downloaded_video(work_dir)
+    if downloaded is None or not downloaded.exists():
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "素材下载失败：未生成本地视频文件。",
+            status_code=500,
+            data={"errorType": "material_download_failed", "materialId": material_id, "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+
+    if downloaded.resolve() != source_path.resolve():
+        if source_path.exists():
+            source_path.unlink()
+        downloaded.replace(source_path)
+
+    metadata = ffmpeg_client.probe_video(source_path)
+    if int(metadata.get("width") or 0) <= 0 or int(metadata.get("height") or 0) <= 0 or float(metadata.get("duration") or 0) <= 0:
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "素材下载失败：本地视频校验失败。",
+            status_code=500,
+            data={"errorType": "ffprobe_failed", "materialId": material_id, "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    file_hash = _sha256_file(source_path)
+    updated = _save_material(
+        material_id,
+        {
+            "downloadStatus": "downloaded",
+            "localFileStatus": "exists",
+            "cacheStatus": "local_ready",
+            "localVideoPath": str(source_path),
+            "localVideoUrl": _local_video_url(material_id),
+            "localFileSize": int(source_path.stat().st_size),
+            "videoPath": str(source_path),
+            "localFileHash": file_hash,
+            "downloadedAt": _now_iso(),
+            "lastCheckAt": _now_iso(),
+            "lastError": None,
+            "triedSources": [{"label": "yt-dlp", "url": source_url, "status": "success"}],
+            "status": "ready",
+            "video": {
+                **(material.get("video") or {}),
+                "url": _local_video_url(material_id),
+                "remoteUrl": source_url,
+                "width": int(metadata.get("width") or 0),
+                "height": int(metadata.get("height") or 0),
+                "duration": float(metadata.get("duration") or 0.0),
+                "fileSize": int(source_path.stat().st_size),
+            },
+        },
+    )
+    append_log(material_id, f"[DOWNLOAD_SUCCESS] size={updated.get('localFileSize')} path={source_path.name}")
+    return updated
+
+
 def download_material_video(material_id: str, source_index: int | None = None) -> dict[str, Any]:
     if not material_json_path(material_id).exists():
         raise AppException(error_code.NOT_FOUND, "素材不存在。", status_code=404)
@@ -140,6 +287,10 @@ def download_material_video(material_id: str, source_index: int | None = None) -
         and existing_status == "exists"
     ):
         return material
+
+    if str(material.get("sourceType") or "").strip().lower() == "bilibili":
+        _save_material(material_id, {"downloadStatus": "downloading", "lastCheckAt": _now_iso(), "triedSources": []})
+        return _download_bilibili_video(material_id, material)
 
     sources = _collect_video_sources(material, source_index)
     if not sources:

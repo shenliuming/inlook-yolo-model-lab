@@ -9,9 +9,10 @@ from app.common.exceptions import AppException
 
 URL_RE = re.compile(r"https?://[^\s\u3000\n\r\t\"'<>]+", re.IGNORECASE)
 BARE_URL_RE = re.compile(
-    r"(?:(?:https?://)?(?:v\.douyin\.com|(?:www\.)?douyin\.com|(?:www\.)?tiktok\.com|(?:www\.)?bilibili\.com|b23\.tv))[^\s\u3000\n\r\t\"'<>]*",
+    r"(?:(?:https?://)?(?:v\.douyin\.com|(?:www\.)?douyin\.com|(?:www\.)?tiktok\.com|(?:m\.)?(?:www\.)?bilibili\.com|b23\.tv))[^\s\u3000\n\r\t\"'<>]*",
     re.IGNORECASE,
 )
+BARE_BILIBILI_BVID_RE = re.compile(r"\b(BV[0-9A-Za-z]{10})\b", re.IGNORECASE)
 TRAILING_CHARS = "，。！？、；：《》）（】『』「」,.!?;:)]}>\"'"
 
 
@@ -50,7 +51,9 @@ def _ensure_scheme(value: str) -> str:
     lowered = value.lower()
     if lowered.startswith(("http://", "https://")):
         return value
-    if re.match(r"^(?:v\.douyin\.com|(?:www\.)?douyin\.com|(?:www\.)?tiktok\.com|(?:www\.)?bilibili\.com|b23\.tv)", lowered):
+    if BARE_BILIBILI_BVID_RE.fullmatch(value.strip()):
+        return f"https://www.bilibili.com/video/{value.strip()}"
+    if re.match(r"^(?:v\.douyin\.com|(?:www\.)?douyin\.com|(?:www\.)?tiktok\.com|(?:m\.)?(?:www\.)?bilibili\.com|b23\.tv)", lowered):
         return f"https://{value}"
     return value
 
@@ -103,9 +106,16 @@ def normalize_url(url: str) -> str:
             return ""
         path = f"/{code}"
     elif host.endswith("bilibili.com"):
-        if path and path != "/":
+        host = "www.bilibili.com"
+        video_match = re.search(r"/video/(BV[0-9A-Za-z]{10})", path, re.IGNORECASE)
+        if video_match:
+            path = f"/video/{video_match.group(1)}"
+            query = ""
+        elif path and path != "/":
             path = path.rstrip("/")
-        query = parsed.query if "/video/" not in path else ""
+            query = parsed.query
+        else:
+            query = parsed.query
     else:
         query = parsed.query
         fragment = parsed.fragment
@@ -161,8 +171,11 @@ def _extract_video_id(normalized_url: str, url_type: str) -> str:
 def extract_video_links(raw_input: str) -> list[dict]:
     content = str(raw_input or "")
     matches = list(URL_RE.finditer(content))
-    if not matches:
-        matches = list(BARE_URL_RE.finditer(content))
+    bare_matches = list(BARE_URL_RE.finditer(content))
+    bvid_matches = list(BARE_BILIBILI_BVID_RE.finditer(content))
+    matches.extend(bare_matches)
+    matches.extend(bvid_matches)
+    matches.sort(key=lambda item: item.start())
 
     results: list[dict] = []
     seen: set[str] = set()

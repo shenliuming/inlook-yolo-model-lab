@@ -143,6 +143,18 @@ const props = defineProps({
     type: Object,
     default: null,
   },
+  selectedVoiceMode: {
+    type: String,
+    default: 'provider_auto',
+  },
+  uploadedVoiceAudioName: {
+    type: String,
+    default: '',
+  },
+  uploadingVoiceAudio: {
+    type: Boolean,
+    default: false,
+  },
   canGenerateHumanVideo: {
     type: Boolean,
     default: false,
@@ -154,6 +166,22 @@ const props = defineProps({
   selectedDigitalHumanPerson: {
     type: Object,
     default: null,
+  },
+  preferredDigitalHumanScriptTitle: {
+    type: String,
+    default: '',
+  },
+  preferredDigitalHumanScriptStatus: {
+    type: String,
+    default: '未准备',
+  },
+  preferredDigitalHumanAudioStatus: {
+    type: String,
+    default: '未生成',
+  },
+  currentVoiceModeLabel: {
+    type: String,
+    default: '',
   },
   studioDigitalHumanOutputPath: {
     type: String,
@@ -181,12 +209,15 @@ defineEmits([
   'update:selectedAvatarId',
   'update:selectedScene',
   'update:selectedBackground',
+  'update:selectedVoiceMode',
   'preview-voice',
   'generate-voice',
   'generate-studio-digital-human',
+  'open-digital-human-template-picker',
   'open-digital-human-manager',
   'open-voice-create',
   'create-voice-from-material',
+  'upload-voice-audio',
   'close-voice-create',
   'voice-create-audio-selected',
   'create-voice',
@@ -211,17 +242,53 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
     <div class="panel-body stack-lg">
       <div class="sub-panel">
         <div class="field-headline">
-          <span class="field-label">AI 配音</span>
+          <span class="field-label">声音方案</span>
           <span class="field-meta">{{ voiceStatus }}</span>
         </div>
 
         <div class="stack-md">
           <div class="info-block">
-            <span>当前配音文案：{{ hasCurrentScript ? currentScriptTitle || '成片文案' : '未选择' }} · 字数：{{ currentScriptLength }}</span>
+            <span>当前文案：{{ hasCurrentScript ? currentScriptTitle || '成片文案' : '未选择' }} · 字数：{{ currentScriptLength }}</span>
+            <span>当前声音方案：{{ selectedVoiceMode === 'inlook_tts' ? 'INLOOK 配音' : selectedVoiceMode === 'upload_audio' ? '上传音频' : '数字人自动配音' }}</span>
             <span v-if="!hasCurrentScript">请先选择一版成片文案，或将手动文案设为成片文案</span>
           </div>
 
-          <div class="field">
+          <div class="chip-group">
+            <button class="chip-button" :class="{ 'chip-button--active': selectedVoiceMode === 'provider_auto' }" type="button" @click="$emit('update:selectedVoiceMode', 'provider_auto')">
+              数字人自动配音
+            </button>
+            <button class="chip-button" :class="{ 'chip-button--active': selectedVoiceMode === 'inlook_tts' }" type="button" @click="$emit('update:selectedVoiceMode', 'inlook_tts')">
+              INLOOK 配音
+            </button>
+            <button class="chip-button" :class="{ 'chip-button--active': selectedVoiceMode === 'upload_audio' }" type="button" @click="$emit('update:selectedVoiceMode', 'upload_audio')">
+              上传音频
+            </button>
+          </div>
+
+          <div v-if="selectedVoiceMode === 'provider_auto'" class="info-block">
+            <span>将不传音频，数字人服务会根据当前文案自动生成声音并产出视频。</span>
+          </div>
+
+          <div v-if="selectedVoiceMode === 'upload_audio'" class="sub-panel">
+            <div class="field-headline">
+              <span class="field-label">上传音频</span>
+              <span class="field-meta">{{ uploadedVoiceAudioName || '未上传' }}</span>
+            </div>
+            <div class="button-row">
+              <label class="secondary-button file-button">
+                {{ uploadingVoiceAudio ? '上传中...' : '上传音频' }}
+                <input
+                  type="file"
+                  accept="audio/*"
+                  class="hidden-input"
+                  :disabled="uploadingVoiceAudio"
+                  @change="$emit('upload-voice-audio', $event)"
+                />
+              </label>
+            </div>
+          </div>
+
+          <div v-if="selectedVoiceMode === 'inlook_tts'" class="field">
             <span class="field-label">我的音色</span>
             <div class="button-row">
               <button class="secondary-button" type="button" @click="$emit('open-voice-create')">创建音色</button>
@@ -237,7 +304,7 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
             <span class="field-meta">{{ trainingStatus }}</span>
           </div>
 
-          <label class="field">
+          <label v-if="selectedVoiceMode === 'inlook_tts'" class="field">
             <span class="field-label">音色</span>
             <select class="select-input" :value="selectedVoiceId" @change="$emit('update:selectedVoiceId', $event.target.value)">
               <option v-if="!voices.length" value="" disabled>暂无可用音色</option>
@@ -247,7 +314,7 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
             </select>
           </label>
 
-          <label class="field">
+          <label v-if="selectedVoiceMode === 'inlook_tts'" class="field">
             <div class="field-headline">
               <span class="field-label">语速</span>
               <span class="field-meta">{{ speed.toFixed(1) }}x</span>
@@ -255,14 +322,14 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
             <input class="range-input" type="range" min="0.8" max="1.3" step="0.1" :value="speed" @input="$emit('update:speed', Number($event.target.value))" />
           </label>
 
-          <label class="field">
+          <label v-if="selectedVoiceMode === 'inlook_tts'" class="field">
             <span class="field-label">情绪</span>
             <select class="select-input" :value="selectedEmotion" @change="$emit('update:selectedEmotion', $event.target.value)">
               <option v-for="emotion in emotions" :key="emotion" :value="emotion">{{ emotion }}</option>
             </select>
           </label>
 
-          <label class="field">
+          <label v-if="selectedVoiceMode === 'inlook_tts'" class="field">
             <div class="field-headline">
               <span class="field-label">音量</span>
               <span class="field-meta">{{ volume }}%</span>
@@ -270,11 +337,11 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
             <input class="range-input" type="range" min="0" max="100" step="1" :value="volume" @input="$emit('update:volume', Number($event.target.value))" />
           </label>
 
-          <div class="wave-placeholder">
+          <div v-if="selectedVoiceMode === 'inlook_tts'" class="wave-placeholder">
             <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
           </div>
 
-          <div class="button-row">
+          <div v-if="selectedVoiceMode === 'inlook_tts'" class="button-row">
             <button class="secondary-button" type="button" :disabled="previewingVoice" @click="$emit('preview-voice')">
               {{ previewingVoice ? '试听中...' : '试听' }}
             </button>
@@ -282,17 +349,17 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
               {{ voiceGenerating ? '生成中...' : '生成配音' }}
             </button>
           </div>
-          <div v-if="voiceReferenceAudioUrl" class="audio-section">
+          <div v-if="selectedVoiceMode === 'inlook_tts' && voiceReferenceAudioUrl" class="audio-section">
             <span class="field-meta">参考音频试听</span>
             <audio class="audio-player" :src="voiceReferenceAudioUrl" controls></audio>
             <span class="field-meta">这里应该是清晰人声。如果听起来像背景音乐、杂音或机器声，请上传单独音频。</span>
             <span v-if="voiceQualityWarnings.length" class="field-meta">{{ voiceQualityWarnings.join(' ') }}</span>
           </div>
-          <div v-if="voicePreviewAudioUrl" class="audio-section">
+          <div v-if="selectedVoiceMode === 'inlook_tts' && voicePreviewAudioUrl" class="audio-section">
             <span class="field-meta">音色试听</span>
             <audio class="audio-player" :src="voicePreviewAudioUrl" controls></audio>
           </div>
-          <div v-if="synthesisAudioUrl" class="audio-section">
+          <div v-if="selectedVoiceMode === 'inlook_tts' && synthesisAudioUrl" class="audio-section">
             <span class="field-meta">正式配音</span>
             <audio class="audio-player" :src="synthesisAudioUrl" controls></audio>
           </div>
@@ -378,14 +445,19 @@ const hasCurrentAudio = computed(() => Boolean(props.currentAudio?.audioUrl))
           <span class="field-meta">{{ humanStatus }}</span>
         </div>
         <StudioDigitalHumanCard
-          :selected-person="selectedDigitalHumanPerson"
+          :selected-template="selectedDigitalHumanPerson"
           :status="humanStatus"
           :output-path="studioDigitalHumanOutputPath"
           :can-generate="canGenerateStudioDigitalHuman"
           :generating="humanGenerating"
           :generate-hint="humanGenerateHint"
+          :script-status="preferredDigitalHumanScriptStatus"
+          :audio-status="preferredDigitalHumanAudioStatus"
+          :voice-mode-label="currentVoiceModeLabel"
+          :generate-button-text="preferredDigitalHumanScriptTitle ? `使用${preferredDigitalHumanScriptTitle}和当前声音方案生成数字人视频` : '使用当前文案和当前声音方案生成数字人视频'"
           :backend-ready="studioDigitalHumanBackendReady"
           :missing-capability-hint="studioDigitalHumanMissingCapabilityHint"
+          @open-template-picker="$emit('open-digital-human-template-picker')"
           @open-manager="$emit('open-digital-human-manager')"
           @generate="$emit('generate-studio-digital-human')"
         />

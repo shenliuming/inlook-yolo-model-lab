@@ -138,6 +138,16 @@ def clear_browser_authorization(platform: str) -> dict:
 
 def ensure_platform_authorized(platform: str) -> None:
     payload = get_browser_auth_status(platform)
+    if payload.get("status") == STATUS_EXPIRED:
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            f"{'抖音' if platform == 'douyin' else 'B站'}授权已过期，请重新授权后再读取素材。",
+            status_code=400,
+            data={
+                "sourceType": platform,
+                "errorType": "platform_auth_expired",
+            },
+        )
     if payload.get("status") != STATUS_AUTHORIZED:
         raise AppException(
             error_code.INTERNAL_ERROR,

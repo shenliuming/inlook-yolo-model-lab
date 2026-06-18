@@ -32,6 +32,14 @@ export const uploadStudioMaterial = async (projectId, formData) =>
     }),
   )
 
+export const uploadStudioVoiceAudio = async (projectId, formData) =>
+  parseApiData(
+    await apiFetch(`/api/v1/studio/projects/${projectId}/voice-audio/upload`, {
+      method: 'POST',
+      body: formData,
+    }),
+  )
+
 export const createStudioTranscription = async (projectId, payload) =>
   parseApiData(
     await apiFetch(`/api/v1/studio/projects/${projectId}/transcriptions`, {

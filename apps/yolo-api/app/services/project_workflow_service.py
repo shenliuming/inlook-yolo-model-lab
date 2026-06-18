@@ -32,6 +32,7 @@ from app.services.project_runtime_service import (
     project_subtitles_dir,
     project_transcription_dir,
     project_tts_synthesis_dir,
+    project_voice_uploads_dir,
     read_project,
     update_project,
     write_json,
@@ -43,6 +44,7 @@ from app.services.studio_tts_service import create_tts_synthesis, get_tts_synthe
 from app.services.transcriptions_service import create_transcription_task
 from app.services.tts_service import task_dir as tts_task_dir
 from app.tasks.studio_task_service import list_tasks as list_global_tasks
+from app.utils.file_utils import safe_filename
 
 
 def _find_project_file_url(project_id: str, destination_root: Path, section_root_name: str, source_url: str) -> str:
@@ -281,6 +283,26 @@ def studio_extract_material(project_id: str, request: MaterialExtractRequestDTO)
 def studio_upload_material(project_id: str, file: UploadFile) -> dict[str, Any]:
     payload = upload_material(file)
     return _snapshot_material_to_project(project_id, payload)
+
+
+def studio_upload_voice_audio(project_id: str, file: UploadFile) -> dict[str, Any]:
+    filename = safe_filename(file.filename or "voice.wav")
+    destination_dir = project_voice_uploads_dir(project_id)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    destination_path = destination_dir / filename
+    with destination_path.open("wb") as output:
+        while True:
+            chunk = file.file.read(1024 * 1024)
+            if not chunk:
+                break
+            output.write(chunk)
+    relative_path = destination_path.relative_to(project_dir(project_id))
+    return {
+        "projectId": project_id,
+        "fileName": filename,
+        "audioPath": str(destination_path),
+        "audioUrl": project_file_url(project_id, relative_path),
+    }
 
 
 def studio_create_transcription(project_id: str, request: StudioProjectTranscriptionRequestDTO) -> dict[str, Any]:

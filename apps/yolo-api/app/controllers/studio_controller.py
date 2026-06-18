@@ -25,6 +25,7 @@ from app.services.project_workflow_service import (
     studio_get_synthesis,
     studio_rewrite_copy,
     studio_upload_material,
+    studio_upload_voice_audio,
 )
 
 router = APIRouter(prefix="/api/v1/studio", tags=["studio"])
@@ -53,6 +54,11 @@ def extract_project_material_handler(project_id: str, request: MaterialExtractRe
 @router.post("/projects/{project_id}/materials/upload")
 async def upload_project_material_handler(project_id: str, file: UploadFile = File(...)):
     return success(studio_upload_material(project_id, file))
+
+
+@router.post("/projects/{project_id}/voice-audio/upload")
+async def upload_project_voice_audio_handler(project_id: str, file: UploadFile = File(...)):
+    return success(studio_upload_voice_audio(project_id, file))
 
 
 @router.post("/projects/{project_id}/transcriptions")

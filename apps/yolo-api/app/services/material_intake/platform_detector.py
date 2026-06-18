@@ -21,7 +21,7 @@ def extract_first_url(text: str) -> str | None:
 
 def detect_platform_from_url(url: str) -> str:
     lower = (url or "").lower()
-    if "bilibili.com" in lower or "b23.tv" in lower:
+    if "bilibili.com" in lower or "b23.tv" in lower or re.search(r"\bbv[0-9a-z]{10}\b", lower):
         return "bilibili"
     if "douyin.com" in lower or "iesdouyin.com" in lower:
         return "douyin"

@@ -16,6 +16,7 @@ from app.common import error_code
 from app.common.exceptions import AppException
 from app.config.paths import STUDIO_TRANSCRIPTION_RUNTIME_DIR
 from app.config.settings import get_asr_provider, get_whisper_vad_filter
+from app.services.material_download_service import download_material_video
 from app.services.ocr_subtitle_service import OcrResult, extract_ocr_subtitles
 from app.services.subtitle_tool.subtitle_pack import extract_audio, transcribe, write_srt
 from app.services.transcription_fusion_service import (
@@ -514,7 +515,14 @@ def create_transcription_task(
     compute_type: str,
     beam_size: int,
 ) -> dict[str, Any]:
-    _validate_local_source_video(material_id)
+    try:
+        _validate_local_source_video(material_id)
+    except AppException as exc:
+        if isinstance(exc.data, dict) and exc.data.get("errorType") == "source_mp4_missing":
+            download_material_video(material_id)
+            _validate_local_source_video(material_id)
+        else:
+            raise
 
     task_id = build_task_id()
     task_inputs_dir(task_id).mkdir(parents=True, exist_ok=True)

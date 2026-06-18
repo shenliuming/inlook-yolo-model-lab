@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -610,6 +611,103 @@ def _extract_bilibili_detail(payloads: list[dict], html: str) -> tuple[dict | No
     return None, play_payload
 
 
+def _bilibili_canonical_url(bvid: str) -> str:
+    return f"https://www.bilibili.com/video/{str(bvid or '').strip()}"
+
+
+def _classify_bilibili_provider_error(message: str, *, source_url: str) -> AppException:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    if "module named yt_dlp" in lowered or "no module named yt_dlp" in lowered:
+        return AppException(
+            error_code.INTERNAL_ERROR,
+            "解析失败，请更新 yt-dlp。",
+            status_code=500,
+            data={"errorType": "bilibili_ytdlp_missing", "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    if "412" in lowered:
+        return AppException(
+            error_code.INTERNAL_ERROR,
+            "网络或风控导致 412，请稍后重试。",
+            status_code=500,
+            data={"errorType": "bilibili_http_412", "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    if "login required" in lowered or "sign in to confirm your age" in lowered or "需要登录" in text:
+        return AppException(
+            error_code.INTERNAL_ERROR,
+            "视频需要登录。",
+            status_code=400,
+            data={"errorType": "bilibili_login_required", "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    if "not found" in lowered or "视频不存在" in text or "unable to download webpage" in lowered:
+        return AppException(
+            error_code.INTERNAL_ERROR,
+            "视频不存在或不可访问。",
+            status_code=404,
+            data={"errorType": "bilibili_not_found", "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    if "extractorerror" in lowered or "extractor error" in lowered:
+        return AppException(
+            error_code.INTERNAL_ERROR,
+            "解析失败，请更新 yt-dlp。",
+            status_code=500,
+            data={"errorType": "bilibili_extractor_error", "sourceType": "bilibili", "sourceUrl": source_url},
+        )
+    return AppException(
+        error_code.INTERNAL_ERROR,
+        "B站素材读取失败，请稍后重试。",
+        status_code=500,
+        data={"errorType": "extractor_failed", "sourceType": "bilibili", "sourceUrl": source_url},
+    )
+
+
+def _run_bilibili_ytdlp_metadata(material_id: str, parsed) -> dict:
+    ensure_platform_authorized(parsed.source_type)
+    cookie_path = material_cache_dir(material_id) / "bilibili.cookies.txt"
+    cookie_count = browser_client.export_netscape_cookies(parsed.source_type, cookie_path)
+    if cookie_count <= 0:
+        mark_platform_authorization_expired(parsed.source_type, "B站授权已过期，请重新授权后再读取素材。")
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "B站授权已过期，请重新授权后再读取素材。",
+            status_code=400,
+            data={"errorType": "platform_auth_expired", "sourceType": parsed.source_type, "sourceUrl": parsed.url},
+        )
+    cmd = [
+        shutil.which("python3") or "python3",
+        "-m",
+        "yt_dlp",
+        "-J",
+        "--no-playlist",
+        "--cookies",
+        str(cookie_path),
+        parsed.normalized_url,
+    ]
+    append_log(material_id, "[EXTRACTOR] yt_dlp")
+    append_log(material_id, f"[BILIBILI_COOKIE_COUNT] {cookie_count}")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or exc.stdout or str(exc)).strip()
+        append_log(material_id, f"[YT_DLP_METADATA_ERROR] {stderr}")
+        raise _classify_bilibili_provider_error(stderr, source_url=parsed.normalized_url) from exc
+    except Exception as exc:
+        append_log(material_id, f"[YT_DLP_METADATA_EXCEPTION] {exc}")
+        raise _classify_bilibili_provider_error(str(exc), source_url=parsed.normalized_url) from exc
+
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except Exception as exc:
+        append_log(material_id, f"[YT_DLP_METADATA_PARSE_ERROR] {exc}")
+        raise AppException(
+            error_code.INTERNAL_ERROR,
+            "解析失败，请更新 yt-dlp。",
+            status_code=500,
+            data={"errorType": "bilibili_extractor_error", "sourceType": parsed.source_type, "sourceUrl": parsed.normalized_url},
+        ) from exc
+    return payload
+
+
 def _map_douyin_material(
     *,
     material_id: str,
@@ -735,6 +833,69 @@ def _map_bilibili_material(*, material_id: str, parsed, final_url: str, view_pay
     return payload
 
 
+def _map_bilibili_ytdlp_material(*, material_id: str, parsed, metadata: dict, cache_hit: bool) -> dict:
+    base = _build_material_shell(material_id=material_id, parsed=parsed)
+    bvid = str(
+        _first_non_empty(
+            metadata.get("bvid"),
+            metadata.get("display_id"),
+            metadata.get("id"),
+            parsed.normalized_url.rsplit("/", 1)[-1],
+        )
+        or ""
+    )
+    canonical_url = _bilibili_canonical_url(bvid) if bvid else parsed.normalized_url
+    duration = round(_parse_float(metadata.get("duration")), 3)
+    width = _parse_int(metadata.get("width"))
+    height = _parse_int(metadata.get("height"))
+    uploader = str(_first_non_empty(metadata.get("uploader"), metadata.get("channel"), metadata.get("creator"), ""))
+    description = str(_first_non_empty(metadata.get("description"), metadata.get("desc"), ""))
+    tags = [str(item).strip() for item in _as_list(metadata.get("tags")) if str(item or "").strip()]
+    web_url = str(_first_non_empty(metadata.get("webpage_url"), canonical_url))
+    return {
+        **base,
+        "platform": "bilibili",
+        "projectId": "",
+        "sourceUrl": canonical_url,
+        "originalUrl": parsed.candidate_url or parsed.normalized_url,
+        "normalizedUrl": canonical_url,
+        "canonicalUrl": canonical_url,
+        "finalUrl": web_url,
+        "title": str(_first_non_empty(metadata.get("title"), "未识别到独立标题")),
+        "description": description,
+        "caption": description,
+        "authorName": uploader,
+        "author": uploader,
+        "tags": tags,
+        "bvid": bvid,
+        "cid": str(metadata.get("cid") or ""),
+        "videoPath": None,
+        "audioPath": None,
+        "transcriptStatus": "idle",
+        "video": {
+            "url": "",
+            "remoteUrl": web_url,
+            "width": width,
+            "height": height,
+            "duration": duration,
+            "fileSize": 0,
+            "sources": [],
+        },
+        "images": [],
+        "coverUrl": str(_first_non_empty(metadata.get("thumbnail"), "")),
+        "musicUrl": "",
+        "extractor": "yt_dlp",
+        "cacheHit": cache_hit,
+        "cacheStatus": "metadata_cached",
+        "downloadStatus": "not_downloaded",
+        "localFileStatus": "none",
+        "status": "metadata_cached",
+        "errorMessage": None,
+        "createdAt": _now_iso(),
+        "updatedAt": _now_iso(),
+    }
+
+
 def _build_local_material_vo(material_id: str, payload: dict) -> dict:
     timestamp = _now_iso()
     source_path = Path(payload["sourcePath"])
@@ -809,10 +970,35 @@ def _has_material_metadata(payload: dict | None) -> bool:
     if not isinstance(payload, dict):
         return False
     video = payload.get("video") if isinstance(payload.get("video"), dict) else {}
-    return bool(str(video.get("url") or video.get("remoteUrl") or "").strip() or list(video.get("sources") or []))
+    return bool(
+        str(video.get("url") or video.get("remoteUrl") or "").strip()
+        or list(video.get("sources") or [])
+        or str(payload.get("title") or "").strip()
+        or str(payload.get("coverUrl") or "").strip()
+        or str(payload.get("bvid") or "").strip()
+    )
 
 
 def _extract_browser_material(material_id: str, parsed) -> dict:
+    if parsed.source_type == "bilibili":
+        metadata = _run_bilibili_ytdlp_metadata(material_id, parsed)
+        payload = _map_bilibili_ytdlp_material(
+            material_id=material_id,
+            parsed=parsed,
+            metadata=metadata,
+            cache_hit=False,
+        )
+        _save_raw_extract_response(
+            material_id,
+            {
+                "extractor": "yt_dlp",
+                "sourceType": parsed.source_type,
+                "sourceUrl": parsed.normalized_url,
+                "metadata": metadata,
+            },
+        )
+        return _persist_material_metadata(material_id, payload)
+
     ensure_platform_authorized(parsed.source_type)
     append_log(material_id, "[EXTRACTOR] browser_auth")
     browser_payload = browser_client.open_material_page(parsed.source_type, parsed.normalized_url)
@@ -944,6 +1130,8 @@ def extract_material(*, source_type: str, raw_input: str, raw_url: str = "") -> 
                 str(hydrated.get("sourceUrl") or ""),
                 str(hydrated.get("normalizedUrl") or ""),
             )
+            if parsed.source_type == "bilibili":
+                return hydrated
             reused_existing = _reuse_cached_material_source(
                 target_material_id=material_id,
                 parsed=parsed,
@@ -972,6 +1160,8 @@ def extract_material(*, source_type: str, raw_input: str, raw_url: str = "") -> 
             and metadata.get("localFileStatus") == "exists"
         ):
             return metadata
+        if parsed.source_type == "bilibili":
+            return metadata
         resolved_video_id = _extract_resolved_video_id(
             str(metadata.get("finalUrl") or ""),
             str(metadata.get("sourceUrl") or ""),
@@ -988,7 +1178,18 @@ def extract_material(*, source_type: str, raw_input: str, raw_url: str = "") -> 
         return download_material_video(material_id)
     except AppException as exc:
         error_type = exc.data.get("errorType") if isinstance(exc.data, dict) else None
-        if error_type in {"url_not_found", "unsupported_platform", "video_url_missing", "material_download_failed"}:
+        if error_type in {
+            "url_not_found",
+            "unsupported_platform",
+            "video_url_missing",
+            "material_download_failed",
+            "platform_auth_expired",
+            "bilibili_http_412",
+            "bilibili_login_required",
+            "bilibili_not_found",
+            "bilibili_extractor_error",
+            "bilibili_ytdlp_missing",
+        }:
             raise
         if parsed.source_type == "douyin" and settings.get_copy_pilot_enabled():
             append_log(material_id, f"[EXTRACTOR_WARNING] type={error_type or 'extractor_failed'} message={exc.message}")

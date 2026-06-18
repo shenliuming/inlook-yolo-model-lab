@@ -49,6 +49,7 @@ def _copy_output(source: str, destination: Path) -> str:
 
 
 def _normalize_task(task: dict[str, Any]) -> dict[str, Any]:
+    voice_mode = str(((task.get("provider_payload") or {}).get("voiceMode")) or "")
     return {
         "taskId": str(task.get("task_id") or ""),
         "templateId": str(task.get("template_id") or ""),
@@ -56,6 +57,7 @@ def _normalize_task(task: dict[str, Any]) -> dict[str, Any]:
         "workflowId": str(task.get("workflow_id") or ""),
         "projectId": str(task.get("project_id") or ""),
         "providerCode": str(task.get("provider_code") or ""),
+        "voiceMode": voice_mode or ("provider_auto" if not str(task.get("audio_task_id") or task.get("audio_path") or task.get("audio_url") or "").strip() else "inlook_tts"),
         "status": str(task.get("status") or "queued"),
         "progress": int(task.get("progress") or 0),
         "script": str(task.get("script") or ""),
@@ -161,7 +163,9 @@ def queue_video_task(request: DigitalHumanGenerateRequestDTO) -> dict[str, Any]:
         "run_log_path": str(log_path),
         "error_message": "",
         "downloads": {},
-        "provider_payload": {},
+        "provider_payload": {
+            "voiceMode": str(request.voiceMode or "provider_auto"),
+        },
         "created_at": now(),
         "updated_at": now(),
         "started_at": "",
@@ -196,9 +200,11 @@ def run_video_task(task_id: str) -> dict[str, Any]:
     sync_workflow_task(running)
     _append_log(log_path, f"[running] provider={provider.code}")
     try:
+        voice_mode = str(((task.get("provider_payload") or {}).get("voiceMode")) or "provider_auto").strip() or "provider_auto"
         request = DigitalHumanGenerateRequestDTO(
             templateId=str(task.get("template_id") or ""),
             script=str(task.get("script") or ""),
+            voiceMode=voice_mode,
             audioTaskId=str(task.get("audio_task_id") or ""),
             audioPath=str(task.get("audio_path") or ""),
             audioUrl=str(task.get("audio_url") or ""),
@@ -207,7 +213,16 @@ def run_video_task(task_id: str) -> dict[str, Any]:
             mode=str(task.get("mode") or "auto"),
         )
         audio_path = _resolve_audio_path(request)
-        if str(task.get("mode") or "auto") == "auto":
+        if voice_mode == "inlook_tts":
+            if audio_path is None and not str(request.audioTaskId or "").strip():
+                raise HTTPException(status_code=400, detail="当前声音方案缺少配音结果")
+        elif voice_mode == "upload_audio":
+            if audio_path is None and not str(request.audioUrl or "").strip():
+                raise HTTPException(status_code=400, detail="当前声音方案缺少上传音频")
+        elif voice_mode == "provider_auto":
+            if not str(task.get("script") or "").strip():
+                raise HTTPException(status_code=400, detail="缺少文案，无法自动生成数字人视频")
+        elif str(task.get("mode") or "auto") == "auto":
             if audio_path is None and not str(task.get("script") or "").strip():
                 raise HTTPException(status_code=400, detail="缺少音频或文案，无法生成数字人视频")
         job = provider.generate_video(
@@ -239,7 +254,10 @@ def run_video_task(task_id: str) -> dict[str, Any]:
                 "run_log_path": str(log_path),
                 "error_message": str(((job.get("error") or {}).get("message")) or ""),
                 "downloads": downloads,
-                "provider_payload": job,
+                "provider_payload": {
+                    **(task.get("provider_payload") or {}),
+                    **job,
+                },
                 "updated_at": now(),
                 "completed_at": now(),
             }
@@ -259,6 +277,7 @@ def run_video_task(task_id: str) -> dict[str, Any]:
                     "metadata": f"/api/v1/files/digital-human/{task_id}/metadata.json",
                     "runLog": f"/api/v1/files/digital-human/{task_id}/run.log",
                 },
+                "provider_payload": task.get("provider_payload") or {},
                 "updated_at": now(),
                 "completed_at": now(),
             }

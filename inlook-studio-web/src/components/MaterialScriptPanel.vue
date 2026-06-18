@@ -99,8 +99,7 @@ const primaryButtonText = computed(() => {
   return '提取文案'
 })
 const flowStatusText = computed(() => {
-  if (props.isReading) return '正在读取素材...'
-  if (props.transcriptionLoading) return '正在提取口播...'
+  if (props.isReading || props.transcriptionLoading) return props.readStatus || '处理中...'
   if (props.subtitleStatus === '完成') return '已完成'
   if (props.materialLamp === 'failed') return props.readStatus || '处理失败'
   return props.readStatus || '等待输入'

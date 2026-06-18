@@ -6,10 +6,12 @@ import MaterialScriptPanel from './components/MaterialScriptPanel.vue'
 import PromptRewritePanel from './components/PromptRewritePanel.vue'
 import VoiceHumanPanel from './components/VoiceHumanPanel.vue'
 import ChanjingDigitalHumanManager from './components/digital-human/ChanjingDigitalHumanManager.vue'
+import DigitalHumanTemplatePickerDialog from './components/digital-human/DigitalHumanTemplatePickerDialog.vue'
 import VoiceLibraryView from './components/VoiceLibraryView.vue'
 import ExportPanel from './components/ExportPanel.vue'
 import VideoPreviewPanel from './components/VideoPreviewPanel.vue'
 import RecentTaskTable from './components/RecentTaskTable.vue'
+import { createEmptyWorkbenchState } from './stores/workbenchState'
 import { clearBrowserAuth, getBrowserAuthStatus, startBrowserAuth } from './api/browserAuth'
 import {
   createVoiceFromMaterial,
@@ -32,6 +34,7 @@ import {
   listStudioTasks,
   rewriteStudioCopy,
   uploadStudioMaterial,
+  uploadStudioVoiceAudio,
 } from './api/studio'
 import {
   aspectOptions,
@@ -130,6 +133,10 @@ const selectedScene = ref(sceneOptions[0])
 const selectedBackground = ref(backgroundOptions[0])
 const selectedDigitalHumanPerson = ref(null)
 const studioDigitalHumanOutputPath = ref('')
+const digitalHumanTemplateDialogVisible = ref(false)
+const selectedVoiceMode = ref('provider_auto')
+const uploadedVoiceAudioName = ref('')
+const uploadingVoiceAudio = ref(false)
 
 const subtitleEnabled = ref(true)
 const selectedSubtitleStyle = ref(subtitleStyles[0])
@@ -153,33 +160,27 @@ const authStatuses = ref({
   bilibili: { platform: 'bilibili', status: 'unauthorized', message: '未授权' },
 })
 const originalTextSource = ref('empty')
-const createEmptyProject = () => ({
-  projectId: null,
-  material: null,
-  materialMode: 'empty',
-  originalText: '',
-  originalTextSource: 'empty',
-  rewriteVersions: [],
-  selectedRewriteVersionId: null,
-  currentScript: '',
-  currentScriptSource: '',
-  currentScriptTitle: '',
-  selectedVoiceId: selectedVoiceId.value,
-  selectedVoiceType: '',
-  selectedAvatarId: selectedAvatarId.value,
-  selectedAvatarName: avatarOptions.find((item) => item.id === selectedAvatarId.value)?.name || '',
-  currentAudio: null,
-  digitalHumanVideo: null,
-  subtitles: null,
-  bgm: {
-    name: selectedBgm.value,
-    narrationVolume: narrationVolume.value,
-    bgmVolume: bgmVolume.value,
-  },
-  exportResult: null,
-  previewVideo: null,
-})
-const currentProject = ref(createEmptyProject())
+const workbenchState = ref(
+  createEmptyWorkbenchState({
+    selectedVoiceId: selectedVoiceId.value,
+    selectedAvatarId: selectedAvatarId.value,
+    voice: {
+      mode: selectedVoiceMode.value,
+      ttsTaskId: '',
+      audioPath: '',
+      audioUrl: '',
+      voiceId: selectedVoiceId.value,
+      providerVoiceId: '',
+    },
+    selectedAvatarName: avatarOptions.find((item) => item.id === selectedAvatarId.value)?.name || '',
+    bgm: {
+      name: selectedBgm.value,
+      narrationVolume: narrationVolume.value,
+      bgmVolume: bgmVolume.value,
+    },
+  }),
+)
+const currentProject = workbenchState
 
 const renderingMeta = ref({
   sourceDuration: '--:--',
@@ -266,6 +267,19 @@ const isMaterialPayloadReady = (payload) =>
   payload?.localFileStatus === 'exists' &&
   Boolean(payload?.localVideoUrl)
 
+const hasMaterialMetadata = (payload) =>
+  Boolean(
+    payload &&
+      (
+        payload.title ||
+        payload.coverUrl ||
+        payload.bvid ||
+        payload.video?.remoteUrl ||
+        payload.video?.duration ||
+        (payload.video?.sources || []).length
+      ),
+  )
+
 const getMaterialUrl = (payload) => cleanUrl(payload?.normalizedUrl || payload?.sourceUrl || '')
 
 const activeMaterialUrl = computed(() => getMaterialUrl(material.value))
@@ -284,6 +298,28 @@ const currentMaterialLocalReady = computed(() => materialLocalReady.value && !is
 
 const selectedVoice = computed(() => voices.value.find((voice) => voice.voiceId === selectedVoiceId.value) || null)
 const activeTtsText = computed(() => currentProject.value.currentScript || '')
+const preferredDigitalHumanScript = computed(() => {
+  const current = String(currentProject.value.script?.current || currentProject.value.currentScript || '').trim()
+  if (current) return current
+  return String(currentProject.value.script?.extracted || currentProject.value.originalText || '').trim()
+})
+
+const preferredDigitalHumanScriptTitle = computed(() => {
+  if (String(currentProject.value.script?.current || currentProject.value.currentScript || '').trim()) {
+    return currentProject.value.currentScriptTitle || '当前文案'
+  }
+  if (String(currentProject.value.script?.extracted || currentProject.value.originalText || '').trim()) {
+    return currentProject.value.originalTextSource === 'video_transcript' ? '提取文案' : '手动文案'
+  }
+  return ''
+})
+
+const preferredDigitalHumanAudio = computed(() => currentProject.value.voice || null)
+const voiceModeLabelMap = {
+  inlook_tts: 'INLOOK 配音',
+  upload_audio: '上传音频',
+  provider_auto: '数字人自动配音',
+}
 
 const projectStepStatus = computed(() => ({
   materialReady: Boolean(
@@ -294,35 +330,68 @@ const projectStepStatus = computed(() => ({
   scriptReady: Boolean(currentProject.value.currentScript?.trim()),
   audioReady: Boolean(currentProject.value.currentAudio?.audioUrl),
   subtitleReady: Boolean(currentProject.value.subtitles || subtitleDownloads.value.srt || subtitleDownloads.value.vtt),
-  avatarReady: Boolean(selectedDigitalHumanPerson.value?.templateId),
-  exportReady: Boolean(currentProject.value.currentAudio?.audioUrl),
+  avatarReady: Boolean(currentProject.value.selectedDigitalHumanTemplateId),
+  exportReady: Boolean(currentProject.value.digitalHumanVideoUrl || currentProject.value.currentAudio?.audioUrl),
 }))
 
 const studioDigitalHumanBackendReady = computed(() => true)
 
 const studioDigitalHumanDisplayName = computed(
-  () => selectedDigitalHumanPerson.value?.name || selectedDigitalHumanPerson.value?.templateId || '',
+  () =>
+    currentProject.value.selectedDigitalHumanTemplateName ||
+    selectedDigitalHumanPerson.value?.name ||
+    currentProject.value.selectedDigitalHumanTemplateId ||
+    '',
 )
 
 const canGenerateStudioDigitalHuman = computed(
-  () =>
-    Boolean(currentProject.value.currentAudio?.audioUrl) &&
-    Boolean(selectedDigitalHumanPerson.value?.templateId) &&
-    studioDigitalHumanBackendReady.value,
+  () => {
+    if (!currentProject.value.selectedDigitalHumanTemplateId) return false
+    if (!preferredDigitalHumanScript.value) return false
+    const voiceMode = currentProject.value.voice?.mode || ''
+    if (!voiceMode) return false
+    if (voiceMode === 'inlook_tts') return Boolean(currentProject.value.voice?.audioPath || currentProject.value.voice?.ttsTaskId)
+    if (voiceMode === 'upload_audio') return Boolean(currentProject.value.voice?.audioPath || currentProject.value.voice?.audioUrl)
+    if (voiceMode === 'provider_auto') return true
+    return false
+  },
 )
 
+const preferredDigitalHumanScriptStatus = computed(() => {
+  if (preferredDigitalHumanScript.value) return `已准备 · ${preferredDigitalHumanScriptTitle.value || '当前文案'}`
+  return '未准备'
+})
+
+const preferredDigitalHumanAudioStatus = computed(() => {
+  const voiceMode = currentProject.value.voice?.mode || ''
+  if (!voiceMode) return '未选择'
+  if (voiceMode === 'provider_auto') return '自动生成'
+  if (preferredDigitalHumanAudio.value?.audioUrl || preferredDigitalHumanAudio.value?.audioPath || preferredDigitalHumanAudio.value?.ttsTaskId) {
+    return `已准备 · ${voiceModeLabelMap[voiceMode] || voiceMode}`
+  }
+  return `未准备 · ${voiceModeLabelMap[voiceMode] || voiceMode}`
+})
+
+const currentVoiceModeLabel = computed(() => voiceModeLabelMap[currentProject.value.voice?.mode || ''] || '未选择')
+
 const studioDigitalHumanHint = computed(() => {
-  if (!currentProject.value.currentAudio?.audioUrl) return '请先生成配音。'
-  if (!selectedDigitalHumanPerson.value?.templateId) return '请先选择数字人。'
-  return `已准备：${currentProject.value.currentScriptTitle || '当前配音'} · ${studioDigitalHumanDisplayName.value}`
+  if (!currentProject.value.selectedDigitalHumanTemplateId) return '请先选择数字人模板'
+  if (!preferredDigitalHumanScript.value) return '请先输入或提取文案'
+  const voiceMode = currentProject.value.voice?.mode || ''
+  if (!voiceMode) return '请先选择声音方案'
+  if (voiceMode === 'inlook_tts' && !currentProject.value.voice?.audioPath && !currentProject.value.voice?.ttsTaskId) return '请先生成配音'
+  if (voiceMode === 'upload_audio' && !currentProject.value.voice?.audioPath && !currentProject.value.voice?.audioUrl) return '请先上传音频'
+  return `已准备：${preferredDigitalHumanScriptTitle.value || '当前文案'} · ${studioDigitalHumanDisplayName.value}`
 })
 
 const studioDigitalHumanStatus = computed(() => {
   if (humanGenerating.value) return humanStatus.value || '数字人视频生成中'
   if (currentProject.value.digitalHumanVideo?.videoUrl) return humanStatus.value || '数字人视频已生成'
-  if (humanStatus.value && ['缺少配音', '未选择数字人'].includes(humanStatus.value)) return humanStatus.value
-  if (!selectedDigitalHumanPerson.value?.templateId) return '未选择数字人'
-  if (!currentProject.value.currentAudio?.audioUrl) return `已选择 ${studioDigitalHumanDisplayName.value}，待配音`
+  if (!currentProject.value.selectedDigitalHumanTemplateId) return '未选择数字人'
+  if (!preferredDigitalHumanScript.value) return '无文案'
+  if (!(currentProject.value.voice?.mode || '')) return '未选择声音方案'
+  if (currentProject.value.voice?.mode === 'inlook_tts' && !currentProject.value.voice?.audioUrl && !currentProject.value.voice?.audioPath) return '未生成配音'
+  if (currentProject.value.voice?.mode === 'upload_audio' && !currentProject.value.voice?.audioUrl && !currentProject.value.voice?.audioPath) return '未上传音频'
   return humanStatus.value || `已选择 ${studioDigitalHumanDisplayName.value}`
 })
 
@@ -332,17 +401,50 @@ const studioDigitalHumanMissingCapabilityHint = computed(() =>
     : '',
 )
 
+const currentDigitalHumanDownloadUrl = computed(() =>
+  normalizeProjectVideoUrl(currentProject.value.digitalHumanVideo?.downloadUrl || ''),
+)
+
+const currentDigitalHumanVideoUrl = computed(() =>
+  normalizeProjectVideoUrl(currentProject.value.digitalHumanVideo?.videoUrl || ''),
+)
+
 const resetCurrentProject = (overrides = {}) => {
   currentProject.value = {
-    ...createEmptyProject(),
+    ...createEmptyWorkbenchState({
+      selectedVoiceId: selectedVoiceId.value,
+      selectedAvatarId: selectedAvatarId.value,
+      voice: {
+        mode: selectedVoiceMode.value,
+        ttsTaskId: '',
+        audioPath: '',
+        audioUrl: '',
+        voiceId: selectedVoiceId.value,
+        providerVoiceId: '',
+      },
+      bgm: {
+        name: selectedBgm.value,
+        narrationVolume: narrationVolume.value,
+        bgmVolume: bgmVolume.value,
+      },
+    }),
     selectedVoiceType: selectedVoice.value?.type || '',
     selectedAvatarName: selectedAvatar.value?.name || '',
+    selectedDigitalHumanTemplateId: selectedDigitalHumanPerson.value?.templateId || '',
+    selectedDigitalHumanTemplateName: selectedDigitalHumanPerson.value?.name || '',
     ...overrides,
   }
 }
 
 const clearProjectDigitalHumanOutput = () => {
   currentProject.value.digitalHumanVideo = null
+  currentProject.value.digitalHuman = {
+    ...(currentProject.value.digitalHuman || {}),
+    taskId: '',
+    videoUrl: '',
+  }
+  currentProject.value.digitalHumanTaskId = ''
+  currentProject.value.digitalHumanVideoUrl = ''
   studioDigitalHumanOutputPath.value = ''
   if (currentProject.value.previewVideo?.type === 'digital_human') {
     currentProject.value.previewVideo = currentProject.value.material?.localVideoUrl
@@ -358,6 +460,7 @@ const clearProjectDigitalHumanOutput = () => {
 const setProjectMaterial = (nextMaterial) => {
   currentProject.value.material = nextMaterial || null
   currentProject.value.materialMode = nextMaterial ? 'video' : 'empty'
+  currentProject.value.sourceMaterialId = nextMaterial?.materialId || ''
   currentProject.value.previewVideo = nextMaterial?.localVideoUrl
     ? {
         type: 'material',
@@ -384,6 +487,13 @@ const setProjectOriginalText = (text, source) => {
   originalTextSource.value = nextSource
   currentProject.value.originalText = nextText
   currentProject.value.originalTextSource = originalTextSource.value
+  if (nextSource === 'video_transcript') {
+    currentProject.value.extractedScript = nextText
+    currentProject.value.script = {
+      ...(currentProject.value.script || {}),
+      extracted: nextText,
+    }
+  }
 }
 
 const clearProjectCurrentScript = () => {
@@ -394,10 +504,25 @@ const clearProjectCurrentScript = () => {
   synthesisAudioUrl.value = ''
   synthesisId.value = ''
   currentProject.value.currentScript = ''
+  currentProject.value.rewrittenScript = ''
+  currentProject.value.script = {
+    ...(currentProject.value.script || {}),
+    rewritten: '',
+    current: '',
+  }
   currentProject.value.currentScriptSource = ''
   currentProject.value.currentScriptTitle = ''
   currentProject.value.selectedRewriteVersionId = null
   currentProject.value.currentAudio = null
+  currentProject.value.ttsTaskId = ''
+  currentProject.value.audioPath = ''
+  currentProject.value.audioUrl = ''
+  currentProject.value.voice = {
+    ...(currentProject.value.voice || {}),
+    ttsTaskId: '',
+    audioPath: '',
+    audioUrl: '',
+  }
   clearProjectDigitalHumanOutput()
   voiceStatus.value = '待生成'
   humanStatus.value = '未生成数字人视频'
@@ -412,10 +537,27 @@ const setProjectCurrentScript = ({ text, source, title, activeResult = '' }) => 
   synthesisAudioUrl.value = ''
   synthesisId.value = ''
   currentProject.value.currentScript = nextText
+  if (source === 'rewrite_version') {
+    currentProject.value.rewrittenScript = nextText
+  }
+  currentProject.value.script = {
+    ...(currentProject.value.script || {}),
+    rewritten: source === 'rewrite_version' ? nextText : currentProject.value.script?.rewritten || '',
+    current: nextText,
+  }
   currentProject.value.currentScriptSource = currentScriptSource.value
   currentProject.value.currentScriptTitle = currentScriptTitle.value
   currentProject.value.selectedRewriteVersionId = source === 'rewrite_version' ? activeResult || null : null
   currentProject.value.currentAudio = null
+  currentProject.value.ttsTaskId = ''
+  currentProject.value.audioPath = ''
+  currentProject.value.audioUrl = ''
+  currentProject.value.voice = {
+    ...(currentProject.value.voice || {}),
+    ttsTaskId: '',
+    audioPath: '',
+    audioUrl: '',
+  }
   clearProjectDigitalHumanOutput()
   voiceStatus.value = `已选择 ${currentScriptTitle.value}`
   humanStatus.value = '未生成数字人视频'
@@ -428,11 +570,15 @@ const setProjectCurrentAudio = (audioResult) => {
       ? rawAudioUrl
       : apiUrl(rawAudioUrl)
     : ''
+  const downloads = audioResult?.downloads || {}
   currentProject.value.currentAudio = audioUrl
     ? {
-        audioId: audioResult?.audioId || audioResult?.synthesisId || synthesisId.value,
+        audioId: audioResult?.audioId || audioResult?.taskId || audioResult?.synthesisId || synthesisId.value,
+        audioTaskId: audioResult?.audioTaskId || audioResult?.taskId || audioResult?.synthesisId || synthesisId.value,
         synthesisId: audioResult?.synthesisId || synthesisId.value,
         audioUrl,
+        audioPath: audioResult?.audioPath || audioResult?.localPath || '',
+        downloads,
         duration: audioResult?.duration || audioResult?.durationSeconds || null,
         voiceId: selectedVoiceId.value,
         voiceType: selectedVoice.value?.type || '',
@@ -440,6 +586,21 @@ const setProjectCurrentAudio = (audioResult) => {
         status: audioResult?.status || 'success',
       }
     : null
+  currentProject.value.ttsTaskId =
+    currentProject.value.currentAudio?.audioTaskId ||
+    currentProject.value.currentAudio?.audioId ||
+    currentProject.value.currentAudio?.synthesisId ||
+    ''
+  currentProject.value.audioPath = currentProject.value.currentAudio?.audioPath || ''
+  currentProject.value.audioUrl = currentProject.value.currentAudio?.audioUrl || ''
+  currentProject.value.voice = {
+    ...(currentProject.value.voice || {}),
+    mode: currentProject.value.voice?.mode || 'inlook_tts',
+    ttsTaskId: currentProject.value.ttsTaskId,
+    audioPath: currentProject.value.audioPath,
+    audioUrl: currentProject.value.audioUrl,
+    voiceId: selectedVoiceId.value,
+  }
 }
 
 watch(
@@ -447,6 +608,11 @@ watch(
   ([voiceId, voiceType], [previousVoiceId] = []) => {
     currentProject.value.selectedVoiceId = voiceId
     currentProject.value.selectedVoiceType = voiceType
+    currentProject.value.voice = {
+      ...(currentProject.value.voice || {}),
+      voiceId,
+      mode: currentProject.value.voice?.mode || selectedVoiceMode.value,
+    }
     if (previousVoiceId && previousVoiceId !== voiceId && currentProject.value.currentAudio) {
       currentProject.value.currentAudio = null
       clearProjectDigitalHumanOutput()
@@ -455,6 +621,47 @@ watch(
       voiceStatus.value = '音色已切换，请重新生成配音'
       humanStatus.value = '未生成数字人视频'
     }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => selectedVoiceMode.value,
+  (mode) => {
+    currentProject.value.voice = {
+      ...(currentProject.value.voice || {}),
+      mode,
+    }
+    if (mode === 'provider_auto') {
+      currentProject.value.voice = {
+        ...(currentProject.value.voice || {}),
+        ttsTaskId: '',
+        audioPath: '',
+        audioUrl: '',
+      }
+      currentProject.value.currentAudio = null
+      currentProject.value.ttsTaskId = ''
+      currentProject.value.audioPath = ''
+      currentProject.value.audioUrl = ''
+      synthesisAudioUrl.value = ''
+      uploadedVoiceAudioName.value = ''
+    }
+    if (mode === 'upload_audio') {
+      currentProject.value.currentAudio = null
+      currentProject.value.ttsTaskId = ''
+      currentProject.value.audioPath = currentProject.value.voice?.audioPath || ''
+      currentProject.value.audioUrl = currentProject.value.voice?.audioUrl || ''
+      synthesisAudioUrl.value = ''
+    }
+    if (mode === 'inlook_tts') {
+      currentProject.value.voice = {
+        ...(currentProject.value.voice || {}),
+        audioPath: currentProject.value.currentAudio?.audioPath || '',
+        audioUrl: currentProject.value.currentAudio?.audioUrl || '',
+        ttsTaskId: currentProject.value.currentAudio?.audioTaskId || currentProject.value.currentAudio?.audioId || currentProject.value.currentAudio?.synthesisId || '',
+      }
+    }
+    clearProjectDigitalHumanOutput()
   },
   { immediate: true },
 )
@@ -589,6 +796,21 @@ const normalizeMaterialReadErrorMessage = (error) => {
   }
   if (errorType === 'material_download_failed') {
     return '素材下载失败，请重试或上传本地视频。'
+  }
+  if (errorType === 'platform_auth_expired') {
+    return 'B站授权已过期，请重新授权后再读取素材。'
+  }
+  if (errorType === 'bilibili_login_required') {
+    return '视频需要登录。'
+  }
+  if (errorType === 'bilibili_not_found') {
+    return '视频不存在或不可访问。'
+  }
+  if (errorType === 'bilibili_extractor_error' || errorType === 'bilibili_ytdlp_missing') {
+    return '解析失败，请更新 yt-dlp。'
+  }
+  if (errorType === 'bilibili_http_412') {
+    return '网络或风控导致 412，请稍后重试。'
   }
   if (errorType === 'extractor_all_failed') {
     if (sourceType === 'douyin') {
@@ -764,7 +986,10 @@ const trimExtractedUrl = (value) => {
 const cleanUrl = (value) => {
   let url = trimExtractedUrl(value)
   if (!url) return ''
-  if (!/^https?:\/\//i.test(url) && /^(?:v\.douyin\.com|(?:www\.)?douyin\.com|(?:www\.)?tiktok\.com|(?:www\.)?bilibili\.com|b23\.tv)/i.test(url)) {
+  if (/^BV[0-9A-Za-z]{10}$/i.test(url)) {
+    return `https://www.bilibili.com/video/${url}`
+  }
+  if (!/^https?:\/\//i.test(url) && /^(?:v\.douyin\.com|(?:www\.)?douyin\.com|(?:www\.)?tiktok\.com|(?:m\.)?(?:www\.)?bilibili\.com|b23\.tv)/i.test(url)) {
     url = `https://${url}`
   }
 
@@ -805,7 +1030,7 @@ const cleanUrl = (value) => {
   if (host.endsWith('bilibili.com')) {
     const videoMatch = path.match(/\/video\/([^/?#]+)/)
     if (videoMatch) return `https://www.bilibili.com/video/${videoMatch[1]}`
-    return `https://${host}${path.replace(/\/+$/, '') || '/'}`
+    return `https://www.bilibili.com${path.replace(/\/+$/, '') || '/'}`
   }
   return `https://${host}${path}${parsed.search}${parsed.hash}`
 }
@@ -836,7 +1061,8 @@ const extractVideoLinksFromInput = (rawInput) => {
   const text = String(rawInput || '')
   const matches = [
     ...text.matchAll(/https?:\/\/[^\s\u3000\n\r\t"'<>]+/gi),
-    ...text.matchAll(/(?:(?:https?:\/\/)?(?:v\.douyin\.com|(?:www\.)?douyin\.com|(?:www\.)?tiktok\.com|(?:www\.)?bilibili\.com|b23\.tv))[^\s\u3000\n\r\t"'<>]*/gi),
+    ...text.matchAll(/(?:(?:https?:\/\/)?(?:v\.douyin\.com|(?:www\.)?douyin\.com|(?:www\.)?tiktok\.com|(?:m\.)?(?:www\.)?bilibili\.com|b23\.tv))[^\s\u3000\n\r\t"'<>]*/gi),
+    ...text.matchAll(/\bBV[0-9A-Za-z]{10}\b/gi),
   ]
   const sortedMatches = matches.sort((left, right) => left.index - right.index)
   const seen = new Set()
@@ -879,6 +1105,7 @@ const applyMaterial = (payload) => {
   subtitleStatus.value = '未生成字幕'
   appError.value = ''
   if (payload.cacheStatus === 'local_ready') readStatus.value = '素材读取成功'
+  else if (payload.cacheStatus === 'metadata_cached' && payload.sourceType === 'bilibili') readStatus.value = '识别到 B站视频，已读取标题、封面和时长'
   else if (payload.cacheStatus === 'metadata_cached') readStatus.value = '已有素材信息，视频未下载'
   else if (payload.cacheStatus === 'local_missing') readStatus.value = '本地视频文件丢失'
   else if (payload.cacheStatus === 'local_invalid') readStatus.value = '本地视频文件无效'
@@ -965,14 +1192,16 @@ const loadAllAuthStatuses = async () => {
 const ensureStudioProjectId = async () => {
   const existingId = String(currentProject.value.projectId || '').trim()
   if (existingId) return existingId
-  const project = await createStudioProject({ name: currentProjectTitle.value || 'Studio 项目' })
+  const project = await createStudioProject({ name: 'Studio 项目' })
   currentProject.value.projectId = project.projectId
+  currentProject.value.workflowId = project.projectId
   return project.projectId
 }
 
 const startFreshStudioProject = async () => {
   const project = await createStudioProject({ name: 'Studio 项目' })
   currentProject.value.projectId = project.projectId
+  currentProject.value.workflowId = project.projectId
   return project.projectId
 }
 
@@ -1107,6 +1336,10 @@ const readMaterial = async ({ rawInput, extractedLinks, primaryLink, requestSeqS
   const detectedSourceType = primaryLink.sourceType
   if (detectedSourceType === 'unknown') {
     readStatus.value = '当前平台可能暂不稳定'
+  } else if (detectedSourceType === 'bilibili') {
+    readStatus.value = '识别到 B站视频，正在读取视频信息'
+  } else {
+    readStatus.value = '正在读取视频信息'
   }
   isReading.value = true
   try {
@@ -1129,12 +1362,15 @@ const readMaterial = async ({ rawInput, extractedLinks, primaryLink, requestSeqS
     if (!isCurrentRequest(requestSeqSnapshot)) return null
     const errorType = error.data?.errorType
     const sourceType = error.data?.sourceType
-    if (errorType === 'platform_not_authorized') {
+    if (errorType === 'platform_not_authorized' || errorType === 'platform_auth_expired') {
       authHint.value = normalizeAuthErrorMessage(error)
       if (sourceType) {
-        setAuthStatus(sourceType, { status: 'unauthorized', message: error.message })
+        setAuthStatus(sourceType, {
+          status: errorType === 'platform_auth_expired' ? 'expired' : 'unauthorized',
+          message: error.message,
+        })
       }
-      readStatus.value = '请先完成授权'
+      readStatus.value = errorType === 'platform_auth_expired' ? 'B站授权已过期' : '请先完成授权'
       return null
     }
     const materialErrorMessage = normalizeMaterialReadErrorMessage(error)
@@ -1163,13 +1399,14 @@ const extractCurrentMaterialScript = async (targetMaterial, requestSeqSnapshot) 
     appError.value = '请先完成素材导入。'
     return
   }
-  if (!isMaterialPayloadReady(targetMaterial)) {
+  if (!hasMaterialMetadata(targetMaterial)) {
     appError.value = '请先读取素材。'
     readStatus.value = '请先读取素材'
     return
   }
   transcriptionLoading.value = true
   subtitleStatus.value = '处理中'
+  readStatus.value = isMaterialPayloadReady(targetMaterial) ? '转写中' : '下载音频并转写中'
   try {
     console.info('[StudioAlpha] POST /transcriptions', {
       materialId: targetMaterialId,
@@ -1193,9 +1430,15 @@ const extractCurrentMaterialScript = async (targetMaterial, requestSeqSnapshot) 
       task.finalText || task.transcript || task.text || task.asrText || ''
     if (preferredText) {
       setProjectOriginalText(preferredText, 'video_transcript')
+      setProjectCurrentScript({
+        text: preferredText,
+        source: 'video_transcript',
+        title: '提取文案',
+      })
       previewTitle.value = preferredText.slice(0, 24) || '已生成原始文案'
     }
     subtitleDownloads.value = task.subtitleFiles || {}
+    currentProject.value.subtitleTaskId = task.transcriptionId || task.taskId || ''
     currentProject.value.subtitles = {
       transcriptionId: task.transcriptionId,
       files: task.subtitleFiles || {},
@@ -1236,7 +1479,8 @@ const extractScript = async () => {
   const primaryLink = extractedLinks[0]
   const normalizedUrl = primaryLink.normalizedUrl
   const activeUrl = activeMaterialUrl.value
-  const shouldReadMaterial = !currentMaterialLocalReady.value || normalizedUrl !== activeUrl
+  const hasActiveMetadata = hasMaterialMetadata(material.value)
+  const shouldReadMaterial = !hasActiveMetadata || normalizedUrl !== activeUrl
   const requestSeqSnapshot = nextRequestSeq()
   currentNormalizedUrl.value = normalizedUrl
   videoLink.value = normalizedUrl
@@ -1260,7 +1504,10 @@ const extractScript = async () => {
   }
 
   if (!isCurrentRequest(requestSeqSnapshot)) return
-  if (!payload || !isMaterialPayloadReady(payload)) {
+  if (!payload) {
+    return
+  }
+  if (shouldReadMaterial && !isMaterialPayloadReady(payload)) {
     return
   }
   await extractCurrentMaterialScript(payload, requestSeqSnapshot)
@@ -1376,6 +1623,15 @@ const runRewrite = async (options = {}) => {
     currentProject.value.selectedRewriteVersionId = null
     activeResultId.value = rewriteResults.value[0]?.id || ''
     rewriteFailed.value = false
+    if (rewriteResults.value.length) {
+      currentProject.value.rewrittenScript = rewriteResults.value[0].text
+      setProjectCurrentScript({
+        text: rewriteResults.value[0].text,
+        source: 'rewrite_version',
+        title: rewriteResults.value[0].title || '改写文案',
+        activeResult: rewriteResults.value[0].id || '',
+      })
+    }
     if (!rewriteResults.value.length) {
       appError.value = 'AI 改写服务未返回可用文案。'
       rewriteFailed.value = true
@@ -1534,8 +1790,46 @@ const createVoiceFromCurrentMaterial = async () => {
   }
 }
 
+const uploadVoiceAudioForCurrentProject = async (file) => {
+  if (!file) return
+  const projectId = await ensureStudioProjectId()
+  uploadingVoiceAudio.value = true
+  appError.value = ''
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    const uploaded = await uploadStudioVoiceAudio(projectId, formData)
+    uploadedVoiceAudioName.value = uploaded.fileName || file.name || ''
+    selectedVoiceMode.value = 'upload_audio'
+    currentProject.value.voice = {
+      ...(currentProject.value.voice || {}),
+      mode: 'upload_audio',
+      audioPath: uploaded.audioPath || '',
+      audioUrl: uploaded.audioUrl || '',
+      ttsTaskId: '',
+    }
+    currentProject.value.audioPath = uploaded.audioPath || ''
+    currentProject.value.audioUrl = uploaded.audioUrl || ''
+    currentProject.value.ttsTaskId = ''
+    currentProject.value.currentAudio = {
+      audioTaskId: '',
+      audioPath: uploaded.audioPath || '',
+      audioUrl: uploaded.audioUrl ? apiUrl(uploaded.audioUrl) : '',
+      status: 'success',
+      sourceScriptTitle: '上传音频',
+    }
+    voiceStatus.value = '已上传音频'
+    clearProjectDigitalHumanOutput()
+  } catch (error) {
+    setGlobalErrorFromException(error, '上传音频失败，请稍后重试。')
+  } finally {
+    uploadingVoiceAudio.value = false
+  }
+}
+
 const generateVoice = async () => {
   const projectId = await ensureStudioProjectId()
+  selectedVoiceMode.value = 'inlook_tts'
   const displayedScriptText = currentProject.value.currentScript || ''
   const scriptText = activeTtsText.value
   if (!scriptText.trim()) {
@@ -1631,9 +1925,24 @@ const openDigitalHumanManager = () => {
   currentView.value = 'digitalHuman'
 }
 
+const openDigitalHumanTemplatePicker = () => {
+  digitalHumanTemplateDialogVisible.value = true
+}
+
+const closeDigitalHumanTemplatePicker = () => {
+  digitalHumanTemplateDialogVisible.value = false
+}
+
 const handleSelectDigitalHumanPerson = (person) => {
   selectedDigitalHumanPerson.value = person || null
   currentProject.value.selectedAvatarName = person?.name || person?.templateId || ''
+  currentProject.value.selectedDigitalHumanTemplateId = person?.templateId || ''
+  currentProject.value.selectedDigitalHumanTemplateName = person?.name || ''
+  currentProject.value.digitalHuman = {
+    ...(currentProject.value.digitalHuman || {}),
+    templateId: person?.templateId || '',
+    templateName: person?.name || '',
+  }
   if (!currentProject.value.digitalHumanVideo) {
     humanStatus.value = person?.templateId ? `已选择 ${person.name || person.templateId}` : '未选择数字人'
   }
@@ -1660,14 +1969,25 @@ const applyDigitalHumanTaskResult = async (projectId, task) => {
   if (localVideoUrl) {
     const projectSnapshot = await getStudioProject(projectId)
     currentProject.value.projectId = projectSnapshot.projectId || currentProject.value.projectId
+    currentProject.value.workflowId = projectSnapshot.projectId || currentProject.value.workflowId
     currentProject.value.digitalHumanVideo = {
       taskId: task.taskId,
       videoUrl: localVideoUrl,
+      downloadUrl: task.downloads?.video || task.videoUrl || '',
       remoteVideoUrl: '',
       localOutputPath: '',
       previewUrl: task.coverUrl || '',
       personId: task.templateId || selectedDigitalHumanPerson.value?.templateId || '',
       status: task.status || 'success',
+    }
+    currentProject.value.digitalHumanTaskId = task.taskId || ''
+    currentProject.value.digitalHumanVideoUrl = localVideoUrl
+    currentProject.value.digitalHuman = {
+      ...(currentProject.value.digitalHuman || {}),
+      templateId: task.templateId || currentProject.value.selectedDigitalHumanTemplateId || '',
+      templateName: task.templateName || currentProject.value.selectedDigitalHumanTemplateName || '',
+      taskId: task.taskId || '',
+      videoUrl: localVideoUrl,
     }
     studioDigitalHumanOutputPath.value = task.downloads?.video || ''
     currentProject.value.previewVideo = {
@@ -1680,16 +2000,31 @@ const applyDigitalHumanTaskResult = async (projectId, task) => {
 
 const generateStudioDigitalHumanFromCurrentAudio = async () => {
   const projectId = await ensureStudioProjectId()
-  const currentAudio = currentProject.value.currentAudio
-  const person = selectedDigitalHumanPerson.value
-  if (!currentAudio?.audioUrl) {
-    humanStatus.value = '缺少配音'
+  const script = currentProject.value.currentScript || preferredDigitalHumanScript.value
+  const voice = currentProject.value.voice || {}
+  if (!currentProject.value.selectedDigitalHumanTemplateId) {
+    humanStatus.value = '未选择模板'
+    appError.value = '请先选择数字人模板。'
+    return
+  }
+  if (!script) {
+    humanStatus.value = '无文案'
+    appError.value = '请先输入或提取文案。'
+    return
+  }
+  if (!voice.mode) {
+    humanStatus.value = '未选择声音方案'
+    appError.value = '请先选择声音方案。'
+    return
+  }
+  if (voice.mode === 'inlook_tts' && !voice.audioPath && !voice.ttsTaskId) {
+    humanStatus.value = '未生成配音'
     appError.value = '请先生成配音。'
     return
   }
-  if (!person?.templateId) {
-    humanStatus.value = '未选择数字人'
-    appError.value = '请先选择数字人。'
+  if (voice.mode === 'upload_audio' && !voice.audioPath && !voice.audioUrl) {
+    humanStatus.value = '未上传音频'
+    appError.value = '请先上传音频。'
     return
   }
 
@@ -1701,14 +2036,17 @@ const generateStudioDigitalHumanFromCurrentAudio = async () => {
 
   try {
     const task = await generateDigitalHumanVideo({
-      templateId: person.templateId,
-      script: currentProject.value.currentScript || '',
-      audioTaskId: currentAudio.audioId || currentAudio.synthesisId || '',
-      audioUrl: currentAudio.audioUrl,
-      workflowId: projectId,
+      templateId: currentProject.value.selectedDigitalHumanTemplateId,
+      script,
+      voiceMode: voice.mode,
+      audioTaskId: voice.ttsTaskId || '',
+      audioPath: voice.audioPath || '',
+      audioUrl: voice.audioUrl || '',
+      workflowId: currentProject.value.workflowId || projectId,
       projectId,
       mode: 'auto',
     })
+    currentProject.value.digitalHumanTaskId = task?.taskId || ''
     await fetchTasks()
     await applyDigitalHumanTaskResult(projectId, task)
     const taskId = task?.taskId
@@ -1865,6 +2203,7 @@ onMounted(() => {
   createStudioProject({ name: 'Studio 项目' })
     .then((project) => {
       currentProject.value.projectId = project.projectId
+      currentProject.value.workflowId = project.projectId
     })
     .catch(() => {
       // ignore bootstrap failure here, later actions will retry
@@ -1894,6 +2233,13 @@ onBeforeUnmount(() => {
 
       <main class="studio-workbench">
         <p v-if="appError" class="app-banner">{{ appError }}</p>
+
+        <DigitalHumanTemplatePickerDialog
+          :visible="digitalHumanTemplateDialogVisible"
+          :selected-template="selectedDigitalHumanPerson"
+          @close="closeDigitalHumanTemplatePicker"
+          @select-template="handleSelectDigitalHumanPerson"
+        />
 
         <VoiceLibraryView
           v-if="currentView === 'voices'"
@@ -2008,19 +2354,29 @@ onBeforeUnmount(() => {
             :current-script-source="currentProject.currentScriptSource"
             :current-script-title="currentProject.currentScriptTitle"
             :current-audio="currentProject.currentAudio"
+            :selected-voice-mode="selectedVoiceMode"
+            :uploaded-voice-audio-name="uploadedVoiceAudioName"
+            :uploading-voice-audio="uploadingVoiceAudio"
             :can-generate-human-video="canGenerateStudioDigitalHuman"
             :human-generate-hint="studioDigitalHumanHint"
             :selected-digital-human-person="selectedDigitalHumanPerson"
+            :preferred-digital-human-script-title="preferredDigitalHumanScriptTitle"
+            :preferred-digital-human-script-status="preferredDigitalHumanScriptStatus"
+            :preferred-digital-human-audio-status="preferredDigitalHumanAudioStatus"
+            :current-voice-mode-label="currentVoiceModeLabel"
             :studio-digital-human-output-path="studioDigitalHumanOutputPath"
             :can-generate-studio-digital-human="canGenerateStudioDigitalHuman"
             :studio-digital-human-backend-ready="studioDigitalHumanBackendReady"
             :studio-digital-human-missing-capability-hint="studioDigitalHumanMissingCapabilityHint"
             @preview-voice="previewVoice"
             @generate-voice="generateVoice"
+            @update:selected-voice-mode="selectedVoiceMode = $event"
+            @open-digital-human-template-picker="openDigitalHumanTemplatePicker"
             @open-digital-human-manager="openDigitalHumanManager"
             @generate-studio-digital-human="generateStudioDigitalHumanFromCurrentAudio"
             @open-voice-create="openVoiceCreateDialog"
             @create-voice-from-material="createVoiceFromCurrentMaterial"
+            @upload-voice-audio="uploadVoiceAudioForCurrentProject($event.target.files?.[0] || null)"
             @close-voice-create="closeVoiceCreateDialog"
             @voice-create-audio-selected="handleVoiceCreateAudioSelected"
             @create-voice="createCustomVoice"
@@ -2072,6 +2428,8 @@ onBeforeUnmount(() => {
             :progress="renderProgress"
             :output-path="outputPath"
             :rendering-meta="renderingMeta"
+            :final-video-url="currentDigitalHumanVideoUrl"
+            :final-download-url="currentDigitalHumanDownloadUrl"
           />
         </div>
 

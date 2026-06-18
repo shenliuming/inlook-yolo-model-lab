@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class DigitalHumanGenerateRequestDTO(BaseModel):
     templateId: str | None = Field(default=None, max_length=160)
     script: str = Field(default="", max_length=10000)
+    voiceMode: Literal["inlook_tts", "upload_audio", "provider_auto"] = "provider_auto"
     audioTaskId: str | None = Field(default=None, max_length=160)
     audioPath: str | None = Field(default=None, max_length=2000)
     audioUrl: str | None = Field(default=None, max_length=2000)

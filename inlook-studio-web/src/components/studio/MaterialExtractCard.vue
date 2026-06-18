@@ -67,6 +67,10 @@ const formatBytes = (value) => {
 
     <p class="material-card__subtitle">{{ statusDescription }}</p>
 
+    <div v-if="material.coverUrl" class="material-card__cover">
+      <img :src="material.coverUrl" :alt="material.title || '素材封面'" />
+    </div>
+
     <div class="material-card__metrics">
       <span>时长：{{ material.video?.duration || 0 }}s</span>
       <span>分辨率：{{ material.video?.width || 0 }} × {{ material.video?.height || 0 }}</span>

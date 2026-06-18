@@ -422,6 +422,22 @@ button {
   font-size: 12px;
 }
 
+.material-card__cover {
+  width: 100%;
+  max-width: 220px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(60, 63, 65, 0.72);
+  background: #1f2124;
+}
+
+.material-card__cover img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
 .material-card__metrics {
   flex-wrap: wrap;
   color: var(--muted);
@@ -520,6 +536,12 @@ button {
 }
 
 .field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form-field {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -924,6 +946,13 @@ button {
   max-width: 760px;
 }
 
+.voice-dialog--template-picker {
+  width: min(1120px, 100%);
+  max-height: min(90vh, 900px);
+  display: flex;
+  flex-direction: column;
+}
+
 .digital-human-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -960,8 +989,13 @@ button {
 
 .digital-human-card-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 16px;
+}
+
+.digital-human-card-grid--compact {
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 12px;
 }
 
 .digital-human-card {
@@ -977,13 +1011,24 @@ button {
   box-shadow: 0 0 0 1px rgba(95, 144, 234, 0.35), 0 18px 36px rgba(0, 0, 0, 0.22);
 }
 
+.digital-human-card--selected {
+  border-color: #5f90ea;
+  box-shadow: 0 0 0 1px rgba(95, 144, 234, 0.35), 0 12px 26px rgba(0, 0, 0, 0.22);
+}
+
+.digital-human-card--compact {
+  border-radius: 14px;
+  box-shadow: none;
+}
+
 .digital-human-card__media {
   position: relative;
-  aspect-ratio: 9 / 12;
+  aspect-ratio: 9 / 16;
   background: radial-gradient(circle at top, rgba(118, 161, 255, 0.18), transparent 35%), #1f2227;
   overflow: hidden;
 }
 
+.digital-human-card__media img,
 .digital-human-card__media video {
   width: 100%;
   height: 100%;
@@ -1020,6 +1065,17 @@ button {
   padding: 14px;
 }
 
+.digital-human-card--compact .digital-human-card__body {
+  gap: 10px;
+  padding: 10px;
+}
+
+.digital-human-card__title {
+  display: block;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .digital-human-card__title-row {
   display: flex;
   align-items: center;
@@ -1036,6 +1092,11 @@ button {
   gap: 6px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.digital-human-card--compact .digital-human-card__meta {
+  gap: 4px;
+  font-size: 11px;
 }
 
 .selected-template-card {
@@ -1410,6 +1471,19 @@ button {
 
 .voice-dialog > .stack-md {
   padding: 16px;
+}
+
+.voice-dialog__body {
+  padding: 16px;
+  overflow: auto;
+}
+
+.voice-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px;
+  border-top: 1px solid var(--border);
 }
 
 .consent-row {
