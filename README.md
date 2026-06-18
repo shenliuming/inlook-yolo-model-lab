@@ -8,6 +8,16 @@ INLOOK YOLO Model Lab is a local-first YOLO web lab for image, video, and camera
 
 - [https://in-look.cn/yolo/](https://in-look.cn/yolo/)
 
+## Architecture Docs
+
+- [正式架构说明](docs/architecture.md)
+- [项目架构图 + 数据流图 + 目录职责说明](docs/project_architecture_and_data_flow.md)
+
+## Frontend Roles
+
+- `inlook-studio-web` 是正式产品主前端
+- `apps/yolo-web` 保留为实验室前端
+
 ## Features
 
 - 图片识别
